@@ -101,6 +101,13 @@ func TestLiveOfflineRestartAndExactlyOnceReplay(t *testing.T) {
 	if err != nil || result.Decision.Effect != policy.EffectAllow {
 		t.Fatalf("fresh cached read policy did not work offline: %#v %v", result.Decision, err)
 	}
+	mutation, err := firstEngine.Pre(ctx, activePath, hook.Input{
+		SessionID: "native-ra32", HookEventName: "PreToolUse", ToolName: "Bash", ToolUseID: "tool-ra32-mutation",
+		ToolInput: map[string]any{"command": "aws ec2 terminate-instances --instance-ids i-ra32fixture"},
+	})
+	if err != nil || mutation.Decision.Effect != policy.EffectDeny {
+		t.Fatalf("offline mutation did not fail closed: %#v %v", mutation.Decision, err)
+	}
 	assertTreeDoesNotContain(t, root, secretFixture)
 
 	// Reconstruct the engine, then lose the response after the server commits.
@@ -112,10 +119,10 @@ func TestLiveOfflineRestartAndExactlyOnceReplay(t *testing.T) {
 		t.Fatal("failure injection did not interrupt replay after server commit")
 	}
 	pending, err := (spool.Store{Root: store.ReceiptRoot()}).Pending()
-	if err != nil || len(pending) != 1 {
+	if err != nil || len(pending) != 2 {
 		t.Fatalf("receipt did not survive the interrupted upload: %#v %v", pending, err)
 	}
-	durableReceipt := pending[0]
+	durableReceipts := append([]spool.Receipt(nil), pending...)
 	finalEngine := enforcement.Engine{Store: localstate.Store{Root: root, FileTokens: true}, Control: client}
 	if err := finalEngine.Replay(ctx); err != nil {
 		t.Fatal(err)
@@ -129,10 +136,11 @@ func TestLiveOfflineRestartAndExactlyOnceReplay(t *testing.T) {
 	}
 
 	detail := fetchSessionDetail(t, ctx, client, session.ID)
-	if len(detail.Receipts) != 1 || detail.Receipts[0].ID != pendingIDFromSent(t, store.ReceiptRoot()) {
-		t.Fatalf("server did not retain exactly one receipt: %#v", detail.Receipts)
+	sentIDs := receiptIDsFromSent(t, store.ReceiptRoot())
+	if len(detail.Receipts) != 2 || !sameReceiptIDs(detail.Receipts, sentIDs) {
+		t.Fatalf("server did not retain each logical receipt exactly once: %#v", detail.Receipts)
 	}
-	if detail.Session.ToolCalls != 1 {
+	if detail.Session.ToolCalls != 2 {
 		t.Fatalf("replay double-counted the logical action: %d", detail.Session.ToolCalls)
 	}
 
@@ -143,7 +151,7 @@ func TestLiveOfflineRestartAndExactlyOnceReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	other.Token = otherEnrollment.DeviceToken
-	foreign := durableReceipt
+	foreign := durableReceipts[0]
 	foreign.Action.TenantID = tenantID
 	foreign.TenantID = tenantID
 	foreignClient := controlclient.Client{BaseURL: baseURL, TenantID: tenantID, Token: other.Token}
@@ -151,7 +159,7 @@ func TestLiveOfflineRestartAndExactlyOnceReplay(t *testing.T) {
 		t.Fatal("a device from another tenant injected a receipt")
 	}
 	assertTreeDoesNotContain(t, root, secretFixture)
-	t.Logf("RA-32 tenant=%s session=%s receipt=%s", tenantID, session.ID, durableReceipt.ID)
+	t.Logf("RA-32 tenant=%s session=%s receipts=%s,%s", tenantID, session.ID, durableReceipts[0].ID, durableReceipts[1].ID)
 }
 
 type crashAfterCommitControl struct {
@@ -206,21 +214,42 @@ func fetchSessionDetail(t *testing.T, ctx context.Context, client controlclient.
 	return detail
 }
 
-func pendingIDFromSent(t *testing.T, receiptRoot string) string {
+func receiptIDsFromSent(t *testing.T, receiptRoot string) map[string]struct{} {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(receiptRoot, "sent"))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("expected one sent receipt: %#v %v", entries, err)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("expected two sent receipts: %#v %v", entries, err)
 	}
-	encoded, err := os.ReadFile(filepath.Join(receiptRoot, "sent", entries[0].Name()))
-	if err != nil {
-		t.Fatal(err)
+	ids := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		encoded, err := os.ReadFile(filepath.Join(receiptRoot, "sent", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var receipt spool.Receipt
+		if err := json.Unmarshal(encoded, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		ids[receipt.ID] = struct{}{}
 	}
-	var receipt spool.Receipt
-	if err := json.Unmarshal(encoded, &receipt); err != nil {
-		t.Fatal(err)
+	return ids
+}
+
+func sameReceiptIDs(receipts []struct {
+	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
+	SessionID string `json:"session_id"`
+	ActionID  string `json:"action_id"`
+}, expected map[string]struct{}) bool {
+	if len(receipts) != len(expected) {
+		return false
 	}
-	return receipt.ID
+	for _, receipt := range receipts {
+		if _, ok := expected[receipt.ID]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func assertTreeDoesNotContain(t *testing.T, root, secret string) {
