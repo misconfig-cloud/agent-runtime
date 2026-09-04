@@ -109,3 +109,26 @@ func TestCodexSubagentOrchestrationUsesLiveNativeOperations(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeShellToolsShareOneStableOperation(t *testing.T) {
+	profile := domain.SessionProfile{Scope: domain.Scope{
+		Provider: "multi", AccountRef: "123456789012 + cluster-1", Environments: []string{"production"}, ResourcePrefixes: []string{"arn:aws:"},
+	}}
+	session := domain.AgentSession{ID: "session-1", TenantID: "tenant-1", ActorID: "actor-1", DeviceID: "device-1"}
+	now := time.Date(2026, 9, 4, 14, 0, 0, 0, time.UTC)
+
+	for _, tool := range []string{"Bash", "shell", "exec_command"} {
+		t.Run(tool, func(t *testing.T) {
+			action, err := Action(profile, session, Input{
+				HookEventName: "PreToolUse", ToolName: tool,
+				ToolInput: map[string]any{"command": "pwd"}, ToolUseID: "call-1", CWD: "/work",
+			}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if action.Operation != "shell.Execute" {
+				t.Fatalf("operation = %q, want shell.Execute", action.Operation)
+			}
+		})
+	}
+}

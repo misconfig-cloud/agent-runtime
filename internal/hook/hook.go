@@ -138,10 +138,19 @@ func classify(profile domain.SessionProfile, tool, command string) (provider, op
 	if operation == "" {
 		operation = "shell.Execute"
 	}
-	if strings.TrimSpace(tool) != "" && !strings.EqualFold(tool, "bash") {
+	if strings.TrimSpace(tool) != "" && !isShellTool(tool) {
 		operation = "tool." + camel(tool)
 	}
 	return
+}
+
+func isShellTool(tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "bash", "shell", "exec_command":
+		return true
+	default:
+		return false
+	}
 }
 
 func camel(value string) string {
