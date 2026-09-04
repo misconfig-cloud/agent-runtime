@@ -48,6 +48,42 @@ type CreateProfileRequest struct {
 	PolicyTTLSeconds int64                   `json:"policy_ttl_seconds"`
 }
 
+type CreateProfileSuccessorRequest struct {
+	AdapterRelease   string `json:"adapter_release"`
+	PolicyTTLSeconds int64  `json:"policy_ttl_seconds"`
+}
+
+type ProfileSuccessor struct {
+	Profile       domain.SessionProfile `json:"profile"`
+	ProfileDigest string                `json:"profile_digest"`
+	Predecessor   struct {
+		ProfileID     string `json:"profile_id"`
+		ProfileDigest string `json:"profile_digest"`
+	} `json:"predecessor"`
+}
+
+type ProfileSuccessorRequiredError struct {
+	ProfileID     string
+	ProfileDigest string
+	SuccessorPath string
+}
+
+func (e *ProfileSuccessorRequiredError) Error() string {
+	return fmt.Sprintf("profile %s uses an older immutable contract; create a compatible successor with `misconfig profile migrate --profile %s`", e.ProfileID, e.ProfileID)
+}
+
+type APIError struct {
+	StatusCode    int
+	Code          string
+	ProfileID     string
+	ProfileDigest string
+	SuccessorPath string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("control plane returned %d: %s", e.StatusCode, e.Code)
+}
+
 func (c Client) Enroll(ctx context.Context, enrollmentToken, tenantID, tenantName, actorID, deviceName string) (Enrollment, error) {
 	body := map[string]string{"tenant_id": tenantID, "tenant_name": tenantName, "actor_id": actorID, "device_name": deviceName}
 	var response Enrollment
@@ -73,13 +109,50 @@ func (c Client) Profiles(ctx context.Context) ([]domain.SessionProfile, error) {
 }
 
 func (c Client) StartSession(ctx context.Context, profile domain.SessionProfile) (domain.AgentSession, error) {
-	digest, err := domain.Digest(profile)
+	definition, err := c.profileDefinition(ctx, profile.ID)
+	if err != nil {
+		return domain.AgentSession{}, fmt.Errorf("load immutable profile definition: %w", err)
+	}
+	if definition.Profile.ID != profile.ID || definition.Profile.Agent != profile.Agent {
+		return domain.AgentSession{}, errors.New("immutable profile definition does not match the selected profile")
+	}
+	digest, err := domain.Digest(definition.Profile)
 	if err != nil {
 		return domain.AgentSession{}, err
 	}
-	request := map[string]string{"profile_id": profile.ID, "profile_digest": digest, "agent": string(profile.Agent)}
+	if digest != definition.ProfileDigest {
+		return domain.AgentSession{}, &ProfileSuccessorRequiredError{
+			ProfileID: profile.ID, ProfileDigest: definition.ProfileDigest,
+			SuccessorPath: "/v1/session-profiles/" + url.PathEscape(profile.ID) + "/successors",
+		}
+	}
+	request := map[string]string{"profile_id": profile.ID, "profile_digest": definition.ProfileDigest, "agent": string(profile.Agent)}
 	var response domain.AgentSession
 	err = c.request(ctx, http.MethodPost, "/v1/sessions", c.Token, c.TenantID, request, &response)
+	var apiError *APIError
+	if errors.As(err, &apiError) && apiError.Code == "profile_successor_required" {
+		return domain.AgentSession{}, &ProfileSuccessorRequiredError{
+			ProfileID: apiError.ProfileID, ProfileDigest: apiError.ProfileDigest, SuccessorPath: apiError.SuccessorPath,
+		}
+	}
+	return response, err
+}
+
+func (c Client) CreateProfileSuccessor(ctx context.Context, profileID string, request CreateProfileSuccessorRequest) (ProfileSuccessor, error) {
+	var response ProfileSuccessor
+	err := c.request(ctx, http.MethodPost, "/v1/session-profiles/"+url.PathEscape(profileID)+"/successors", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) profileDefinition(ctx context.Context, profileID string) (struct {
+	Profile       domain.SessionProfile `json:"profile"`
+	ProfileDigest string                `json:"profile_digest"`
+}, error) {
+	var response struct {
+		Profile       domain.SessionProfile `json:"profile"`
+		ProfileDigest string                `json:"profile_digest"`
+	}
+	err := c.request(ctx, http.MethodGet, "/v1/session-profiles/"+url.PathEscape(profileID), c.Token, c.TenantID, nil, &response)
 	return response, err
 }
 
@@ -176,13 +249,21 @@ func (c Client) request(ctx context.Context, method, path, token, tenant string,
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var problem struct {
-			Error string `json:"error"`
+			Error         string `json:"error"`
+			ProfileID     string `json:"profile_id"`
+			ProfileDigest string `json:"profile_digest"`
+			Successor     struct {
+				Path string `json:"path"`
+			} `json:"successor"`
 		}
 		_ = json.Unmarshal(data, &problem)
 		if problem.Error == "" {
 			problem.Error = strings.TrimSpace(string(data))
 		}
-		return fmt.Errorf("control plane returned %d: %s", response.StatusCode, problem.Error)
+		return &APIError{
+			StatusCode: response.StatusCode, Code: problem.Error, ProfileID: problem.ProfileID,
+			ProfileDigest: problem.ProfileDigest, SuccessorPath: problem.Successor.Path,
+		}
 	}
 	if output != nil && len(data) > 0 {
 		if err := json.Unmarshal(data, output); err != nil {

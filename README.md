@@ -12,6 +12,7 @@ This repository is independent from the hosted control plane and console.
 misconfig setup
 misconfig profile create
 misconfig profile list
+misconfig profile migrate
 misconfig run
 misconfig status
 misconfig uninstall --yes
@@ -132,6 +133,17 @@ Example rules file for an intentionally read-only acceptance session:
 
 Unmatched actions fail closed. Deny and stop rules take precedence over allow
 rules.
+
+Profiles are immutable. If a profile was signed by an older runtime contract,
+launch returns an explicit successor-required error instead of changing its
+digest. Create a successor with the current adapter while retaining the old
+profile and its session history:
+
+```sh
+misconfig profile migrate --profile PROFILE_ID
+```
+
+The command prints the new profile ID. Use that ID for the next launch.
 
 ## Launch an agent
 

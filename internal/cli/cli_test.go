@@ -31,6 +31,9 @@ type stubControl struct {
 	remote      domain.AgentSession
 	signed      policy.SignedBundle
 	created     controlclient.CreateProfileRequest
+	successor   controlclient.ProfileSuccessor
+	successorOf string
+	successorIn controlclient.CreateProfileSuccessorRequest
 	stopped     []string
 	receipts    []spool.Receipt
 }
@@ -42,6 +45,13 @@ func (s *stubControl) Enroll(_ context.Context, token, _, _, _, _ string) (contr
 func (s *stubControl) CreateProfile(_ context.Context, request controlclient.CreateProfileRequest) (domain.SessionProfile, string, error) {
 	s.created = request
 	return s.profiles[0], "sha256:profile", nil
+}
+func (s *stubControl) CreateProfileSuccessor(_ context.Context, profileID string, request controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error) {
+	s.successorOf, s.successorIn = profileID, request
+	if s.successor.Profile.ID == "" {
+		return controlclient.ProfileSuccessor{}, errors.New("not implemented in stub")
+	}
+	return s.successor, nil
 }
 func (s *stubControl) Profiles(context.Context) ([]domain.SessionProfile, error) {
 	return s.profiles, nil
@@ -260,6 +270,29 @@ func TestCreateProfileUsesSafeApprovalDefault(t *testing.T) {
 	}
 	if len(control.created.Rules) != 1 || control.created.Rules[0].Effect != policy.EffectApproval || control.created.AdapterRelease != "codex@1.2.3" {
 		t.Fatalf("unsafe profile default: %#v", control.created)
+	}
+}
+
+func TestProfileMigrationExplicitlyCreatesANewRuntimeSuccessor(t *testing.T) {
+	root := t.TempDir()
+	legacy := domain.SessionProfile{ID: "profile-legacy", Name: "production", Agent: domain.AgentCodex}
+	control := enrolledStub()
+	control.profiles = []domain.SessionProfile{legacy}
+	control.successor.Profile = domain.SessionProfile{ID: "profile-successor", Name: "production (successor)", Agent: domain.AgentCodex}
+	seedEnrollment(t, root, control)
+	var out bytes.Buffer
+	app := &App{
+		Out: &out, Err: io.Discard, StateRoot: root, FileTokens: true, Version: "2.4.0",
+		NewControl: func(_, _, _ string) Control { return control },
+	}
+	if err := app.Run(context.Background(), []string{"profile", "migrate", "--profile", legacy.ID, "--policy-ttl", "600"}); err != nil {
+		t.Fatal(err)
+	}
+	if control.successorOf != legacy.ID || control.successorIn.AdapterRelease != "codex@2.4.0" || control.successorIn.PolicyTTLSeconds != 600 {
+		t.Fatalf("successor request is not bound to the legacy profile and current runtime: %q %#v", control.successorOf, control.successorIn)
+	}
+	if !strings.Contains(out.String(), "profile-successor") || !strings.Contains(out.String(), "immutable profile profile-legacy") {
+		t.Fatalf("migration output does not guide the next launch: %q", out.String())
 	}
 }
 

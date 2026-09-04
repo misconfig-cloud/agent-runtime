@@ -32,6 +32,7 @@ const defaultControlURL = "https://sessions.misconfig.cloud"
 type Control interface {
 	Enroll(context.Context, string, string, string, string, string) (controlclient.Enrollment, error)
 	CreateProfile(context.Context, controlclient.CreateProfileRequest) (domain.SessionProfile, string, error)
+	CreateProfileSuccessor(context.Context, string, controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error)
 	Profiles(context.Context) ([]domain.SessionProfile, error)
 	StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error)
 	Session(context.Context, string) (domain.AgentSession, error)
@@ -290,9 +291,48 @@ func (a *App) profile(ctx context.Context, args []string) error {
 		return a.createProfile(ctx, args[1:])
 	case "list":
 		return a.listProfiles(ctx, args[1:])
+	case "migrate":
+		return a.migrateProfile(ctx, args[1:])
 	default:
 		return exitError{code: 2, err: fmt.Errorf("unknown profile command %q", args[0])}
 	}
+}
+
+func (a *App) migrateProfile(ctx context.Context, args []string) error {
+	flags := a.flags("profile migrate")
+	profileReference := flags.String("profile", "", "legacy profile name or ID")
+	ttl := flags.Int64("policy-ttl", 300, "successor signed policy TTL in seconds")
+	if err := flags.Parse(args); err != nil {
+		return exitError{code: 2, err: err}
+	}
+	if *profileReference == "" && flags.NArg() == 1 {
+		*profileReference = flags.Arg(0)
+	} else if flags.NArg() != 0 || *profileReference == "" {
+		return exitError{code: 2, err: errors.New("profile migrate requires --profile or one profile name or ID")}
+	}
+	if *ttl < 60 || *ttl > 86400 {
+		return exitError{code: 2, err: errors.New("policy-ttl must be between 60 and 86400 seconds")}
+	}
+	_, _, control, err := a.authenticated()
+	if err != nil {
+		return err
+	}
+	profiles, err := control.Profiles(ctx)
+	if err != nil {
+		return fmt.Errorf("list profiles: %w", err)
+	}
+	predecessor, err := selectProfile(profiles, *profileReference)
+	if err != nil {
+		return err
+	}
+	successor, err := control.CreateProfileSuccessor(ctx, predecessor.ID, controlclient.CreateProfileSuccessorRequest{
+		AdapterRelease: string(predecessor.Agent) + "@" + a.Version, PolicyTTLSeconds: *ttl,
+	})
+	if err != nil {
+		return fmt.Errorf("create profile successor: %w", err)
+	}
+	fmt.Fprintf(a.Out, "Created compatible successor %s (%s) for immutable profile %s. Run it with `misconfig run --profile %s`.\n", successor.Profile.Name, successor.Profile.ID, predecessor.ID, successor.Profile.ID)
+	return nil
 }
 
 type stringsFlag []string
@@ -864,7 +904,7 @@ func (a *App) flags(name string) *flag.FlagSet {
 
 func (a *App) usage() {
 	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|run|status|sync|uninstall>")
-	fmt.Fprintln(a.Err, "       misconfig profile <create|list>")
+	fmt.Fprintln(a.Err, "       misconfig profile <create|list|migrate>")
 }
 
 func writeJSON(out io.Writer, value any) error {
