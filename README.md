@@ -73,7 +73,7 @@ rules and credentials used by a governed session.
 Pin the expected release during an install or upgrade:
 
 ```sh
-sudo ./install.sh --require-version 0.1.0 --yes
+sudo ./install.sh --require-version "${VERSION}" --yes
 ```
 
 Installation stages and verifies the new binary in the destination directory,
@@ -107,7 +107,7 @@ go build -o ./bin/misconfig ./cmd/misconfig
 Maintainers can build the versioned macOS/Linux matrix reproducibly:
 
 ```sh
-make release RELEASE_VERSION=0.1.0
+make release RELEASE_VERSION=1.2.3
 make verify-release
 ```
 
