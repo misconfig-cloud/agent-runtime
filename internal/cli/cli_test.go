@@ -23,24 +23,41 @@ import (
 )
 
 type stubControl struct {
-	enrollToken string
-	enrollment  controlclient.Enrollment
-	profiles    []domain.SessionProfile
-	sessions    []domain.AgentSession
-	started     domain.AgentSession
-	remote      domain.AgentSession
-	signed      policy.SignedBundle
-	created     controlclient.CreateProfileRequest
-	successor   controlclient.ProfileSuccessor
-	successorOf string
-	successorIn controlclient.CreateProfileSuccessorRequest
-	stopped     []string
-	receipts    []spool.Receipt
+	enrollToken            string
+	enrollment             controlclient.Enrollment
+	profiles               []domain.SessionProfile
+	sessions               []domain.AgentSession
+	started                domain.AgentSession
+	remote                 domain.AgentSession
+	signed                 policy.SignedBundle
+	created                controlclient.CreateProfileRequest
+	successor              controlclient.ProfileSuccessor
+	successorOf            string
+	successorIn            controlclient.CreateProfileSuccessorRequest
+	stopped                []string
+	receipts               []spool.Receipt
+	authorizationStart     controlclient.DeviceAuthorizationStart
+	authorizationExchanges []controlclient.DeviceAuthorizationExchange
+	authorizationPolls     int
 }
 
 func (s *stubControl) Enroll(_ context.Context, token, _, _, _, _ string) (controlclient.Enrollment, error) {
 	s.enrollToken = token
 	return s.enrollment, nil
+}
+func (s *stubControl) CreateDeviceAuthorization(_ context.Context, deviceName string) (controlclient.DeviceAuthorizationStart, error) {
+	if s.authorizationStart.DeviceCode == "" {
+		return controlclient.DeviceAuthorizationStart{}, errors.New("not implemented in stub")
+	}
+	return s.authorizationStart, nil
+}
+func (s *stubControl) ExchangeDeviceAuthorization(context.Context, string) (controlclient.DeviceAuthorizationExchange, error) {
+	if s.authorizationPolls >= len(s.authorizationExchanges) {
+		return controlclient.DeviceAuthorizationExchange{}, errors.New("unexpected authorization poll")
+	}
+	result := s.authorizationExchanges[s.authorizationPolls]
+	s.authorizationPolls++
+	return result, nil
 }
 func (s *stubControl) CreateProfile(_ context.Context, request controlclient.CreateProfileRequest) (domain.SessionProfile, string, error) {
 	s.created = request
@@ -127,7 +144,7 @@ func TestSetupAcceptsSecretSourcesButNeverArgv(t *testing.T) {
 				Hostname:   func() (string, error) { return "test-device", nil },
 				NewControl: func(_, _, _ string) Control { return control },
 			}
-			args = append(args, "--tenant", "tenant-1", "--actor", "actor-1")
+			args = append(args, "--tenant", "tenant-1", "--actor", "actor-1", "--yes")
 			if err := app.Run(context.Background(), append([]string{"setup"}, args...)); err != nil {
 				t.Fatal(err)
 			}
@@ -148,6 +165,76 @@ func TestSetupAcceptsSecretSourcesButNeverArgv(t *testing.T) {
 	err := app.Run(context.Background(), []string{"setup", "--tenant", "tenant-1", "--actor", "actor-1", "--token", "argv-secret"})
 	if err == nil || ExitCode(err) != 2 || control.enrollToken != "" {
 		t.Fatalf("argv secret was not rejected before enrollment: %v", err)
+	}
+}
+
+func TestSetupUsesBrowserPairingAndPreviewsEveryLocalChange(t *testing.T) {
+	root := t.TempDir()
+	control := enrolledStub()
+	control.authorizationStart = controlclient.DeviceAuthorizationStart{
+		DeviceCode: "device-code", UserCode: "ABCD-EFGH-JKLM",
+		VerificationURI:         "https://console.test/device",
+		VerificationURIComplete: "https://console.test/device?user_code=ABCD-EFGH-JKLM",
+		ExpiresIn:               600, Interval: 3,
+	}
+	control.authorizationExchanges = []controlclient.DeviceAuthorizationExchange{
+		{State: "pending"},
+		{State: "authorized", Enrollment: control.enrollment},
+	}
+	var out bytes.Buffer
+	opened := ""
+	app := &App{
+		In: strings.NewReader(""), Out: &out, Err: io.Discard, StateRoot: root, FileTokens: true,
+		Hostname:        func() (string, error) { return "founder-laptop", nil },
+		OpenURL:         func(target string) error { opened = target; return nil },
+		RefreshInterval: time.Millisecond,
+		NewControl:      func(_, _, _ string) Control { return control },
+	}
+	if err := app.Run(context.Background(), []string{"setup", "--control", "https://control.test", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		"Setup preview", "https://control.test", "founder-laptop", filepath.Join(root, "config.json"),
+		filepath.Join(root, "secrets", "<device-id>"), "authenticated browser approval",
+		"Codex configuration: unchanged", "Claude configuration: unchanged",
+		"AWS and Kubernetes credentials: not read, copied, or uploaded", "ABCD-EFGH-JKLM",
+	} {
+		if !strings.Contains(out.String(), expected) {
+			t.Fatalf("setup preview omitted %q:\n%s", expected, out.String())
+		}
+	}
+	if opened != control.authorizationStart.VerificationURIComplete || control.authorizationPolls != 2 {
+		t.Fatalf("browser pairing was not completed: opened=%q polls=%d", opened, control.authorizationPolls)
+	}
+	config, err := (localstate.Store{Root: root, FileTokens: true}).LoadConfig()
+	if err != nil || config.TenantID != "tenant-1" || config.ActorID != "actor-1" || config.DeviceID != "device-1" {
+		t.Fatalf("paired identity was not stored: %#v %v", config, err)
+	}
+	if strings.Contains(out.String(), control.enrollment.DeviceToken) || strings.Contains(out.String(), "device-code") {
+		t.Fatal("setup leaked a device credential")
+	}
+}
+
+func TestSetupCancellationMakesNoChangesAndNoNetworkRequest(t *testing.T) {
+	root := t.TempDir()
+	control := enrolledStub()
+	var out bytes.Buffer
+	app := &App{
+		In: strings.NewReader("no\n"), Out: &out, Err: io.Discard, StateRoot: root, FileTokens: true,
+		Hostname:   func() (string, error) { return "cancelled-laptop", nil },
+		NewControl: func(_, _, _ string) Control { return control },
+	}
+	if err := app.Run(context.Background(), []string{"setup", "--control", "https://control.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if control.enrollToken != "" || control.authorizationPolls != 0 || control.authorizationStart.DeviceCode != "" {
+		t.Fatal("cancelled setup reached the control plane")
+	}
+	if _, err := os.Stat(filepath.Join(root, "config.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled setup wrote local state: %v", err)
+	}
+	if !strings.Contains(out.String(), "No files, credentials, or agent configuration were changed") {
+		t.Fatalf("cancellation was not explicit: %s", out.String())
 	}
 }
 

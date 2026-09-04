@@ -36,6 +36,20 @@ type Enrollment struct {
 	PolicyPublicKey string `json:"policy_public_key"`
 }
 
+type DeviceAuthorizationStart struct {
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+}
+
+type DeviceAuthorizationExchange struct {
+	State      string     `json:"state"`
+	Enrollment Enrollment `json:"enrollment"`
+}
+
 type CreateProfileRequest struct {
 	Name             string                  `json:"name"`
 	Agent            string                  `json:"agent"`
@@ -88,6 +102,18 @@ func (c Client) Enroll(ctx context.Context, enrollmentToken, tenantID, tenantNam
 	body := map[string]string{"tenant_id": tenantID, "tenant_name": tenantName, "actor_id": actorID, "device_name": deviceName}
 	var response Enrollment
 	err := c.request(ctx, http.MethodPost, "/v1/devices/enroll", enrollmentToken, "", body, &response)
+	return response, err
+}
+
+func (c Client) CreateDeviceAuthorization(ctx context.Context, deviceName string) (DeviceAuthorizationStart, error) {
+	var response DeviceAuthorizationStart
+	err := c.request(ctx, http.MethodPost, "/v1/device-authorizations", "", "", map[string]string{"device_name": deviceName}, &response)
+	return response, err
+}
+
+func (c Client) ExchangeDeviceAuthorization(ctx context.Context, deviceCode string) (DeviceAuthorizationExchange, error) {
+	var response DeviceAuthorizationExchange
+	err := c.request(ctx, http.MethodPost, "/v1/device-authorizations/token", "", "", map[string]string{"device_code": deviceCode}, &response)
 	return response, err
 }
 

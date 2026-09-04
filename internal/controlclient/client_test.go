@@ -145,6 +145,76 @@ func TestCreateProfileSuccessorUsesTheExplicitMigrationEndpoint(t *testing.T) {
 	}
 }
 
+func TestBrowserDeviceAuthorizationUsesPublicOneTimeExchange(t *testing.T) {
+	var polls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-Misconfig-Tenant") != "" {
+			t.Fatalf("browser authorization must not claim tenant identity before approval: %#v", r.Header)
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/device-authorizations":
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request["device_name"] != "engineering-laptop" {
+				t.Fatalf("device name = %q", request["device_name"])
+			}
+			writeTestJSON(t, w, http.StatusCreated, DeviceAuthorizationStart{
+				DeviceCode: "opaque-device-code", UserCode: "ABCD-EFGH-JKLM",
+				VerificationURI:         "https://console.example/device",
+				VerificationURIComplete: "https://console.example/device?user_code=ABCD-EFGH-JKLM",
+				ExpiresIn:               600, Interval: 3,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/device-authorizations/token":
+			var request map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Fatal(err)
+			}
+			if request["device_code"] != "opaque-device-code" {
+				t.Fatalf("device code = %q", request["device_code"])
+			}
+			if polls.Add(1) == 1 {
+				writeTestJSON(t, w, http.StatusAccepted, DeviceAuthorizationExchange{State: "pending"})
+				return
+			}
+			var authorized DeviceAuthorizationExchange
+			authorized.State = "authorized"
+			authorized.Enrollment.Device.ID = "device-a"
+			authorized.Enrollment.Device.TenantID = "tenant-a"
+			authorized.Enrollment.Device.ActorID = "actor-a"
+			authorized.Enrollment.Device.Name = "engineering-laptop"
+			authorized.Enrollment.DeviceToken = "issued-once"
+			authorized.Enrollment.PolicyKeyID = "key-a"
+			authorized.Enrollment.PolicyPublicKey = "public-key"
+			writeTestJSON(t, w, http.StatusOK, authorized)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{BaseURL: server.URL, TenantID: "must-not-be-sent", Token: "must-not-be-sent"}
+	started, err := client.CreateDeviceAuthorization(context.Background(), "engineering-laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.UserCode != "ABCD-EFGH-JKLM" || started.DeviceCode != "opaque-device-code" || started.ExpiresIn != 600 {
+		t.Fatalf("start response changed: %#v", started)
+	}
+	pending, err := client.ExchangeDeviceAuthorization(context.Background(), started.DeviceCode)
+	if err != nil || pending.State != "pending" {
+		t.Fatalf("pending exchange = %#v err=%v", pending, err)
+	}
+	authorized, err := client.ExchangeDeviceAuthorization(context.Background(), started.DeviceCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorized.State != "authorized" || authorized.Enrollment.Device.TenantID != "tenant-a" || authorized.Enrollment.DeviceToken != "issued-once" {
+		t.Fatalf("authorized exchange changed identity: %#v", authorized)
+	}
+}
+
 func testProfile() domain.SessionProfile {
 	return domain.SessionProfile{
 		ID: "profile-a", TenantID: "tenant-a", Name: "Production", Agent: domain.AgentCodex,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +33,8 @@ const defaultControlURL = "https://sessions.misconfig.cloud"
 
 type Control interface {
 	Enroll(context.Context, string, string, string, string, string) (controlclient.Enrollment, error)
+	CreateDeviceAuthorization(context.Context, string) (controlclient.DeviceAuthorizationStart, error)
+	ExchangeDeviceAuthorization(context.Context, string) (controlclient.DeviceAuthorizationExchange, error)
 	CreateProfile(context.Context, controlclient.CreateProfileRequest) (domain.SessionProfile, string, error)
 	CreateProfileSuccessor(context.Context, string, controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error)
 	Profiles(context.Context) ([]domain.SessionProfile, error)
@@ -60,6 +64,7 @@ type App struct {
 	UserHomeDir     func() (string, error)
 	CurrentDir      func() (string, error)
 	Hostname        func() (string, error)
+	OpenURL         func(string) error
 	RefreshInterval time.Duration
 }
 
@@ -157,6 +162,9 @@ func (a *App) defaults() {
 	if a.Hostname == nil {
 		a.Hostname = os.Hostname
 	}
+	if a.OpenURL == nil {
+		a.OpenURL = openBrowser
+	}
 	if a.RefreshInterval <= 0 {
 		a.RefreshInterval = 5 * time.Second
 	}
@@ -210,17 +218,13 @@ func (a *App) setup(ctx context.Context, args []string) error {
 	actorID := flags.String("actor", "", "actor identity")
 	deviceName := flags.String("device", "", "device name")
 	tokenFile := flags.String("token-file", "", "enrollment token file, or - for stdin")
+	yes := flags.Bool("yes", false, "apply the displayed setup changes")
+	noOpen := flags.Bool("no-open", false, "print the browser link without opening it")
 	if err := flags.Parse(args); err != nil {
 		return exitError{code: 2, err: err}
 	}
 	if flags.NArg() != 0 {
 		return exitError{code: 2, err: errors.New("setup does not accept positional arguments")}
-	}
-	if strings.TrimSpace(*tenantID) == "" || strings.TrimSpace(*actorID) == "" {
-		return exitError{code: 2, err: errors.New("--tenant and --actor are required")}
-	}
-	if *tenantName == "" {
-		*tenantName = *tenantID
 	}
 	if *deviceName == "" {
 		name, err := a.Hostname()
@@ -229,27 +233,89 @@ func (a *App) setup(ctx context.Context, args []string) error {
 		}
 		*deviceName = name
 	}
-	token, err := a.enrollmentToken(*tokenFile)
-	if err != nil {
-		return err
-	}
-	client := a.NewControl(*controlURL, "", "")
-	enrollment, err := client.Enroll(ctx, token, *tenantID, *tenantName, *actorID, *deviceName)
-	if err != nil {
-		return fmt.Errorf("enroll device: %w", err)
-	}
-	if enrollment.Device.ID == "" || enrollment.Device.TenantID != *tenantID || enrollment.DeviceToken == "" || enrollment.PolicyKeyID == "" || enrollment.PolicyPublicKey == "" {
-		return errors.New("control plane returned an incomplete enrollment")
-	}
 	store, err := a.store()
 	if err != nil {
 		return err
+	}
+	if _, err := store.LoadConfig(); err == nil {
+		return errors.New("this device is already enrolled; run `misconfig uninstall --yes` before replacing its identity")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect existing enrollment: %w", err)
+	}
+	legacy := strings.TrimSpace(*tenantID) != "" || strings.TrimSpace(*actorID) != "" || strings.TrimSpace(*tokenFile) != "" || strings.TrimSpace(a.Getenv("MISCONFIG_ENROLLMENT_TOKEN")) != ""
+	a.setupPreview(store, *controlURL, *deviceName, legacy)
+	if !*yes {
+		approved, err := a.confirmSetup()
+		if err != nil {
+			return err
+		}
+		if !approved {
+			fmt.Fprintln(a.Out, "Setup cancelled. No files, credentials, or agent configuration were changed.")
+			return nil
+		}
+	}
+	client := a.NewControl(*controlURL, "", "")
+	var enrollment controlclient.Enrollment
+	if legacy {
+		if strings.TrimSpace(*tenantID) == "" || strings.TrimSpace(*actorID) == "" {
+			return exitError{code: 2, err: errors.New("recovery enrollment requires both --tenant and --actor")}
+		}
+		if *tenantName == "" {
+			*tenantName = *tenantID
+		}
+		token, err := a.enrollmentToken(*tokenFile)
+		if err != nil {
+			return err
+		}
+		enrollment, err = client.Enroll(ctx, token, *tenantID, *tenantName, *actorID, *deviceName)
+		if err != nil {
+			return fmt.Errorf("enroll device with recovery token: %w", err)
+		}
+	} else {
+		start, err := client.CreateDeviceAuthorization(ctx, *deviceName)
+		if err != nil {
+			return fmt.Errorf("start browser device pairing: %w", err)
+		}
+		if start.DeviceCode == "" || start.UserCode == "" || start.VerificationURIComplete == "" {
+			return errors.New("control plane returned an incomplete device authorization")
+		}
+		fmt.Fprintf(a.Out, "Approve this device in your browser.\n\n  Code: %s\n  Link: %s\n\n", start.UserCode, start.VerificationURIComplete)
+		if !*noOpen {
+			if err := a.OpenURL(start.VerificationURIComplete); err != nil {
+				fmt.Fprintf(a.Err, "Browser could not be opened automatically: %v\n", err)
+			}
+		}
+		deadline := a.Now().Add(time.Duration(start.ExpiresIn) * time.Second)
+		for {
+			if !deadline.After(a.Now()) {
+				return errors.New("device pairing expired before approval; run setup again")
+			}
+			exchange, err := client.ExchangeDeviceAuthorization(ctx, start.DeviceCode)
+			if err != nil {
+				return fmt.Errorf("complete browser device pairing: %w", err)
+			}
+			if exchange.State == "authorized" {
+				enrollment = exchange.Enrollment
+				break
+			}
+			if exchange.State != "pending" {
+				return fmt.Errorf("control plane returned unknown device authorization state %q", exchange.State)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(a.RefreshInterval):
+			}
+		}
+	}
+	if enrollment.Device.ID == "" || enrollment.Device.TenantID == "" || enrollment.Device.ActorID == "" || enrollment.DeviceToken == "" || enrollment.PolicyKeyID == "" || enrollment.PolicyPublicKey == "" {
+		return errors.New("control plane returned an incomplete enrollment")
 	}
 	if err := store.PutDeviceToken(enrollment.Device.ID, enrollment.DeviceToken); err != nil {
 		return err
 	}
 	config := localstate.Config{
-		ControlURL: *controlURL, TenantID: *tenantID, ActorID: *actorID,
+		ControlURL: *controlURL, TenantID: enrollment.Device.TenantID, ActorID: enrollment.Device.ActorID,
 		DeviceID: enrollment.Device.ID, DeviceName: *deviceName,
 		PolicyKeyID: enrollment.PolicyKeyID, PolicyPublicKey: enrollment.PolicyPublicKey,
 	}
@@ -257,8 +323,48 @@ func (a *App) setup(ctx context.Context, args []string) error {
 		_ = store.DeleteDeviceToken(enrollment.Device.ID)
 		return err
 	}
-	fmt.Fprintf(a.Out, "Enrolled %s for tenant %s.\n", enrollment.Device.ID, *tenantID)
+	fmt.Fprintf(a.Out, "Device paired. %s is governed for tenant %s.\n", enrollment.Device.ID, enrollment.Device.TenantID)
 	return nil
+}
+
+func (a *App) setupPreview(store localstate.Store, controlURL, deviceName string, recovery bool) {
+	credentialBackend := "encrypted operating-system credential store"
+	if a.FileTokens || runtime.GOOS != "darwin" {
+		credentialBackend = filepath.Join(store.Root, "secrets", "<device-id>") + " (mode 0600)"
+	}
+	approval := "authenticated browser approval"
+	if recovery {
+		approval = "operator-issued recovery token"
+	}
+	fmt.Fprintf(a.Out, "Setup preview\n\n  Control plane: %s\n  Device: %s\n  State: %s\n  Device credential: %s\n  Authorization: %s\n  Codex configuration: unchanged\n  Claude configuration: unchanged\n  AWS and Kubernetes credentials: not read, copied, or uploaded\n\n", strings.TrimRight(controlURL, "/"), deviceName, filepath.Join(store.Root, "config.json"), credentialBackend, approval)
+}
+
+func (a *App) confirmSetup() (bool, error) {
+	fmt.Fprint(a.Out, "Continue? [y/N] ")
+	line, err := bufio.NewReader(a.In).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read setup confirmation: %w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func openBrowser(target string) error {
+	var command string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		command, args = "open", []string{target}
+	case "windows":
+		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
+	default:
+		command, args = "xdg-open", []string{target}
+	}
+	return exec.Command(command, args...).Start()
 }
 
 func (a *App) enrollmentToken(path string) (string, error) {
