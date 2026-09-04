@@ -31,8 +31,14 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.0
-ARCHIVE="misconfig_${VERSION}_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz"
+VERSION=0.1.1
+OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=amd64 ;;
+  arm64|aarch64) ARCH=arm64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 2 ;;
+esac
+ARCHIVE="misconfig_${VERSION}_${OS}_${ARCH}.tar.gz"
 BASE_URL="https://github.com/misconfig-cloud/agent-runtime/releases/download/v${VERSION}"
 
 curl --fail --location --remote-name "${BASE_URL}/${ARCHIVE}"
