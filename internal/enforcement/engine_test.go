@@ -283,7 +283,7 @@ func TestNativeHookRetryReusesActionAndReceiptAcrossRestart(t *testing.T) {
 
 func fixture(t *testing.T, effect policy.Effect) (Engine, *fakeControl, string, time.Time) {
 	t.Helper()
-	now := time.Date(2026, 9, 4, 15, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
 	store := localstate.Store{Root: root}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
