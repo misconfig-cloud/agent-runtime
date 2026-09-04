@@ -36,9 +36,20 @@ sudo ./install.sh
 ```
 
 macOS provides `shasum -a 256 -c checksums.txt` in place of `sha256sum`.
-`checksums.txt` covers every archive and the exact `manifest.json`; it is the
-subject intended for release signing. Until detached signatures are published,
-obtain it through the same trusted release channel as the archive.
+`checksums.txt` covers every archive, `manifest.json`, `compatibility.json`, and
+the SPDX 2.3 `sbom.spdx.json`. It is the subject intended for release signing.
+Until detached signatures are published, obtain it through the same trusted
+release channel as the archive.
+
+Pin the expected release during an install or upgrade:
+
+```sh
+sudo ./install.sh --require-version 0.1.0 --yes
+```
+
+Installation stages and verifies the new binary in the destination directory,
+then replaces the old binary atomically. If post-install verification fails,
+the previous runtime is restored.
 
 Enroll without putting the short-lived token in shell history or the process
 argument list:
@@ -72,8 +83,10 @@ make verify-release
 ```
 
 The release command embeds the explicit version, strips host paths and build
-IDs, fixes archive metadata to `SOURCE_DATE_EPOCH`, and emits `manifest.json`
-plus `checksums.txt`. It refuses to overwrite an existing release by default.
+IDs, fixes archive metadata to `SOURCE_DATE_EPOCH`, and emits `manifest.json`,
+`compatibility.json`, an SPDX 2.3 SBOM, and `checksums.txt`. Compatibility is
+stated per exact native-client version and distinguishes live acceptance from
+fixture-only coverage. The builder refuses to overwrite a release by default.
 
 ## Enrol one device
 

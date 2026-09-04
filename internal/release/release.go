@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,13 +33,89 @@ type Artifact struct {
 	Size     int64  `json:"size"`
 }
 
+type ReleaseFile struct {
+	Filename string `json:"filename"`
+	SHA256   string `json:"sha256"`
+	Size     int64  `json:"size"`
+}
+
 type Manifest struct {
-	SchemaVersion   int        `json:"schema_version"`
-	Product         string     `json:"product"`
-	Version         string     `json:"version"`
-	Commit          string     `json:"commit"`
-	SourceDateEpoch int64      `json:"source_date_epoch"`
-	Artifacts       []Artifact `json:"artifacts"`
+	SchemaVersion   int         `json:"schema_version"`
+	Product         string      `json:"product"`
+	Version         string      `json:"version"`
+	Commit          string      `json:"commit"`
+	SourceDateEpoch int64       `json:"source_date_epoch"`
+	Artifacts       []Artifact  `json:"artifacts"`
+	Compatibility   ReleaseFile `json:"compatibility"`
+	SBOM            ReleaseFile `json:"sbom"`
+}
+
+type CompatibilityManifest struct {
+	SchemaVersion int                    `json:"schema_version"`
+	Product       string                 `json:"product"`
+	Version       string                 `json:"version"`
+	Commit        string                 `json:"commit"`
+	Adapters      []AdapterCompatibility `json:"adapters"`
+}
+
+type AdapterCompatibility struct {
+	Agent                string   `json:"agent"`
+	AdapterRelease       string   `json:"adapter_release"`
+	ClientProduct        string   `json:"client_product"`
+	TestedClientVersions []string `json:"tested_client_versions"`
+	HookEvents           []string `json:"hook_events"`
+	ApprovalProjection   string   `json:"approval_projection"`
+	CompletionEvidence   string   `json:"completion_evidence"`
+	Acceptance           string   `json:"acceptance"`
+	Limitations          []string `json:"limitations,omitempty"`
+}
+
+type SPDXDocument struct {
+	SPDXVersion       string             `json:"spdxVersion"`
+	DataLicense       string             `json:"dataLicense"`
+	SPDXID            string             `json:"SPDXID"`
+	Name              string             `json:"name"`
+	DocumentNamespace string             `json:"documentNamespace"`
+	CreationInfo      SPDXCreationInfo   `json:"creationInfo"`
+	Packages          []SPDXPackage      `json:"packages"`
+	Files             []SPDXFile         `json:"files"`
+	Relationships     []SPDXRelationship `json:"relationships"`
+}
+
+type SPDXCreationInfo struct {
+	Created  string   `json:"created"`
+	Creators []string `json:"creators"`
+}
+
+type SPDXPackage struct {
+	Name             string `json:"name"`
+	SPDXID           string `json:"SPDXID"`
+	VersionInfo      string `json:"versionInfo"`
+	DownloadLocation string `json:"downloadLocation"`
+	FilesAnalyzed    bool   `json:"filesAnalyzed"`
+	LicenseConcluded string `json:"licenseConcluded"`
+	LicenseDeclared  string `json:"licenseDeclared"`
+	CopyrightText    string `json:"copyrightText"`
+	SourceInfo       string `json:"sourceInfo"`
+}
+
+type SPDXChecksum struct {
+	Algorithm     string `json:"algorithm"`
+	ChecksumValue string `json:"checksumValue"`
+}
+
+type SPDXFile struct {
+	FileName         string         `json:"fileName"`
+	SPDXID           string         `json:"SPDXID"`
+	Checksums        []SPDXChecksum `json:"checksums"`
+	LicenseConcluded string         `json:"licenseConcluded"`
+	CopyrightText    string         `json:"copyrightText"`
+}
+
+type SPDXRelationship struct {
+	SPDXElementID      string `json:"spdxElementId"`
+	RelationshipType   string `json:"relationshipType"`
+	RelatedSPDXElement string `json:"relatedSpdxElement"`
 }
 
 type Options struct {
@@ -104,14 +181,14 @@ func Build(ctx context.Context, repository string, options Options) (Manifest, e
 			return Manifest{}, err
 		}
 	}
-	for _, name := range []string{"manifest.json", "checksums.txt"} {
+	for _, name := range []string{"manifest.json", "checksums.txt", "compatibility.json", "sbom.spdx.json"} {
 		if err := refuseExisting(filepath.Join(output, name), options.Overwrite); err != nil {
 			return Manifest{}, err
 		}
 	}
 
 	manifest := Manifest{
-		SchemaVersion: 1, Product: "misconfig-agent-runtime", Version: options.Version,
+		SchemaVersion: 2, Product: "misconfig-agent-runtime", Version: options.Version,
 		Commit: options.Commit, SourceDateEpoch: options.SourceDateEpoch,
 	}
 	for _, target := range targets {
@@ -153,6 +230,22 @@ func Build(ctx context.Context, repository string, options Options) (Manifest, e
 		}
 		manifest.Artifacts = append(manifest.Artifacts, Artifact{Target: target, Filename: filename, SHA256: digest, Size: size})
 	}
+	compatibility, err := encodeJSON(compatibilityManifest(options))
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.Compatibility, err = writeReleaseFile(output, "compatibility.json", compatibility, options.Overwrite)
+	if err != nil {
+		return Manifest{}, err
+	}
+	sbom, err := encodeJSON(sbomDocument(options, manifest.Artifacts))
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.SBOM, err = writeReleaseFile(output, "sbom.spdx.json", sbom, options.Overwrite)
+	if err != nil {
+		return Manifest{}, err
+	}
 	if err := writeMetadata(output, manifest, options.Overwrite); err != nil {
 		return Manifest{}, err
 	}
@@ -169,7 +262,7 @@ func Verify(directory string) error {
 	if err := json.Unmarshal(encoded, &manifest); err != nil {
 		return fmt.Errorf("decode manifest: %w", err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.Product != "misconfig-agent-runtime" || manifest.Version == "" {
+	if manifest.SchemaVersion != 2 || manifest.Product != "misconfig-agent-runtime" || manifest.Version == "" {
 		return errors.New("manifest identity is invalid")
 	}
 	expected := make(map[string]string, len(manifest.Artifacts)+1)
@@ -190,6 +283,22 @@ func Verify(directory string) error {
 			return fmt.Errorf("artifact %s does not match its manifest", artifact.Filename)
 		}
 		expected[artifact.Filename] = digest
+	}
+	for _, metadata := range []ReleaseFile{manifest.Compatibility, manifest.SBOM} {
+		if filepath.Base(metadata.Filename) != metadata.Filename || metadata.Filename == "" {
+			return fmt.Errorf("release metadata path %q is not local", metadata.Filename)
+		}
+		if _, exists := expected[metadata.Filename]; exists {
+			return fmt.Errorf("duplicate release file %q", metadata.Filename)
+		}
+		digest, size, err := digestFile(filepath.Join(directory, metadata.Filename))
+		if err != nil {
+			return err
+		}
+		if digest != metadata.SHA256 || size != metadata.Size {
+			return fmt.Errorf("release file %s does not match its manifest", metadata.Filename)
+		}
+		expected[metadata.Filename] = digest
 	}
 	checksums, err := os.ReadFile(filepath.Join(directory, "checksums.txt"))
 	if err != nil {
@@ -326,9 +435,98 @@ func writeMetadata(output string, manifest Manifest, overwrite bool) error {
 	for _, artifact := range manifest.Artifacts {
 		lines = append(lines, artifact.SHA256+"  "+artifact.Filename)
 	}
+	for _, metadata := range []ReleaseFile{manifest.Compatibility, manifest.SBOM} {
+		lines = append(lines, metadata.SHA256+"  "+metadata.Filename)
+	}
 	lines = append(lines, hex.EncodeToString(manifestSum[:])+"  manifest.json")
 	sort.Strings(lines)
 	return atomicWrite(checksumsPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
+func writeReleaseFile(output, name string, encoded []byte, overwrite bool) (ReleaseFile, error) {
+	path := filepath.Join(output, name)
+	if err := refuseExisting(path, overwrite); err != nil {
+		return ReleaseFile{}, err
+	}
+	if err := atomicWrite(path, encoded, 0o644); err != nil {
+		return ReleaseFile{}, err
+	}
+	digest, size, err := digestFile(path)
+	if err != nil {
+		return ReleaseFile{}, err
+	}
+	return ReleaseFile{Filename: name, SHA256: digest, Size: size}, nil
+}
+
+func encodeJSON(value any) ([]byte, error) {
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(encoded, '\n'), nil
+}
+
+func compatibilityManifest(options Options) CompatibilityManifest {
+	return CompatibilityManifest{
+		SchemaVersion: 1,
+		Product:       "misconfig-agent-runtime",
+		Version:       options.Version,
+		Commit:        options.Commit,
+		Adapters: []AdapterCompatibility{
+			{
+				Agent: "codex", AdapterRelease: "codex@" + options.Version,
+				ClientProduct: "OpenAI Codex CLI", TestedClientVersions: []string{"0.152.0"},
+				HookEvents:         []string{"PreToolUse", "PostToolUse"},
+				ApprovalProjection: "require_approval is rendered as a synchronous deny with an external approval reason",
+				CompletionEvidence: "opaque shell output is observed, never independently verified",
+				Acceptance:         "direct_allow_deny_live_accepted",
+				Limitations:        []string{"nested and subagent live acceptance remains open"},
+			},
+			{
+				Agent: "claude", AdapterRelease: "claude@" + options.Version,
+				ClientProduct: "Anthropic Claude Code", TestedClientVersions: []string{"2.1.222"},
+				HookEvents:         []string{"PreToolUse", "PostToolUse", "PostToolUseFailure"},
+				ApprovalProjection: "require_approval is rendered as the native ask decision",
+				CompletionEvidence: "success and failure hooks close the logical action as observed",
+				Acceptance:         "fixture_tested_live_pending",
+				Limitations:        []string{"authenticated direct, nested and subagent live acceptance remains open"},
+			},
+		},
+	}
+}
+
+func sbomDocument(options Options, artifacts []Artifact) SPDXDocument {
+	files := make([]SPDXFile, 0, len(artifacts))
+	relationships := []SPDXRelationship{{
+		SPDXElementID: "SPDXRef-DOCUMENT", RelationshipType: "DESCRIBES", RelatedSPDXElement: "SPDXRef-Package-agent-runtime",
+	}}
+	for index, artifact := range artifacts {
+		id := fmt.Sprintf("SPDXRef-File-%d", index+1)
+		files = append(files, SPDXFile{
+			FileName: "./" + artifact.Filename, SPDXID: id,
+			Checksums:        []SPDXChecksum{{Algorithm: "SHA256", ChecksumValue: artifact.SHA256}},
+			LicenseConcluded: "Apache-2.0", CopyrightText: "Copyright Misconfig Cloud LLC",
+		})
+		relationships = append(relationships, SPDXRelationship{
+			SPDXElementID: "SPDXRef-Package-agent-runtime", RelationshipType: "CONTAINS", RelatedSPDXElement: id,
+		})
+	}
+	return SPDXDocument{
+		SPDXVersion: "SPDX-2.3", DataLicense: "CC0-1.0", SPDXID: "SPDXRef-DOCUMENT",
+		Name:              "misconfig-agent-runtime-" + options.Version,
+		DocumentNamespace: "https://misconfig.cloud/sbom/agent-runtime/" + options.Version + "/" + options.Commit,
+		CreationInfo: SPDXCreationInfo{
+			Created:  time.Unix(options.SourceDateEpoch, 0).UTC().Format(time.RFC3339),
+			Creators: []string{"Organization: Misconfig Cloud LLC", "Tool: misconfig-release/" + options.Version, "Tool: " + runtime.Version()},
+		},
+		Packages: []SPDXPackage{{
+			Name: "github.com/misconfig-cloud/agent-runtime", SPDXID: "SPDXRef-Package-agent-runtime",
+			VersionInfo: options.Version, DownloadLocation: "https://github.com/misconfig-cloud/agent-runtime",
+			FilesAnalyzed: true, LicenseConcluded: "Apache-2.0", LicenseDeclared: "Apache-2.0",
+			CopyrightText: "Copyright Misconfig Cloud LLC", SourceInfo: "commit " + options.Commit,
+		}},
+		Files: files, Relationships: relationships,
+	}
 }
 
 func atomicWrite(path string, encoded []byte, mode os.FileMode) error {

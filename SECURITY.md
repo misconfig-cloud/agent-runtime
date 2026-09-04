@@ -18,8 +18,10 @@ Report vulnerabilities privately to contact@misconfig.cloud.
   as verified success.
 - Release archives contain no enrollment token or customer credential. The
   release manifest pins source identity, platform, byte size, and SHA-256 for
-  every artifact. `checksums.txt` is ready for detached signing; it is not a
-  signature by itself.
+  every artifact plus the compatibility manifest and SPDX SBOM. Installation
+  is verified and atomic, with rollback to the previous binary on failed
+  post-install verification. `checksums.txt` is ready for detached signing; it
+  is not a signature by itself.
 
 ## What this release does not claim
 
