@@ -1,0 +1,10 @@
+[
+  {
+    "id": "allow-aws-identity-read",
+    "effect": "allow",
+    "providers": ["aws"],
+    "operations": ["aws.sts.GetCallerIdentity"],
+    "resource_prefixes": ["arn:aws:"],
+    "reason": "approved read-only AWS identity check"
+  }
+]

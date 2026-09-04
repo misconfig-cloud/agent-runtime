@@ -2,6 +2,28 @@
 
 Report vulnerabilities privately to contact@misconfig.cloud.
 
-The current foundation does not claim production enforcement. Native agent
-hooks are guardrails. Hard enforcement requires a credential-brokered or other
-non-bypassable authority boundary.
+## Current trust boundary
+
+- Native Codex and Claude hooks are local, bypassable guardrails.
+- Synchronous pre/post hooks never depend on the network. Missing, malformed,
+  expired, incorrectly signed, or identity-mismatched state fails closed.
+- The parent runtime refreshes remote session state and signed policies outside
+  the hook deadline. Remote stop cancels the launched agent process.
+- Device credentials and customer infrastructure credentials are never sent to
+  hook stdout or embedded in agent configuration.
+- Raw provider output and transcripts are not uploaded. Receipts contain
+  bounded action metadata and a digest of supported structured results.
+- Codex Bash output in the currently supported native hook version has no
+  trustworthy exit code. It is retained as observed activity, never invented
+  as verified success.
+
+## What this release does not claim
+
+Attach mode cannot prevent use of the same AWS, Kubernetes, or SaaS credential
+outside the governed process. Hard enforcement requires short-lived brokered
+credentials or an exact typed execution capability with independent provider
+verification. Neither claim may be inferred from a successful native-hook test.
+
+The runtime does not perform generic TLS interception, store long-lived cloud
+credentials, retain chain-of-thought, or treat a model statement as provider
+proof.

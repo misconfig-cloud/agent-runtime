@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,14 @@ import (
 	"strings"
 	"time"
 )
+
+func NewID(prefix string) (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return prefix + "_" + hex.EncodeToString(random), nil
+}
 
 type EnforcementLevel string
 
@@ -78,8 +87,8 @@ type SessionProfile struct {
 	Scope          Scope            `json:"scope"`
 	Enforcement    EnforcementLevel `json:"enforcement"`
 	CredentialMode CredentialMode   `json:"credential_mode"`
-	PolicyRelease  string           `json:"policy_release"`
 	AdapterRelease string           `json:"adapter_release"`
+	PolicyRelease  string           `json:"policy_release"`
 	CreatedAt      time.Time        `json:"created_at"`
 }
 

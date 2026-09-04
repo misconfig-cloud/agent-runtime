@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -10,6 +12,19 @@ func TestAttachModeCannotClaimBrokeredEnforcement(t *testing.T) {
 	profile.Enforcement = EnforcementBrokered
 	if err := profile.Validate(); err == nil {
 		t.Fatal("expected attach-mode enforcement claim to fail")
+	}
+}
+
+func TestProfileCanonicalOrderMatchesControlPlaneDigestContract(t *testing.T) {
+	encoded, err := json.Marshal(validProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(encoded)
+	adapter := strings.Index(value, `"adapter_release"`)
+	policy := strings.Index(value, `"policy_release"`)
+	if adapter < 0 || policy < 0 || adapter > policy {
+		t.Fatalf("profile digest field order drifted from the control plane: %s", value)
 	}
 }
 

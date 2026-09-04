@@ -17,22 +17,24 @@ import (
 type Outcome string
 
 const (
-	OutcomeBlocked   Outcome = "blocked"
-	OutcomeApproved  Outcome = "approved"
-	OutcomeSucceeded Outcome = "succeeded"
-	OutcomeFailed    Outcome = "failed"
+	OutcomeBlocked            Outcome = "blocked"
+	OutcomeWaitingForApproval Outcome = "waiting_for_approval"
+	OutcomeApproved           Outcome = "approved"
+	OutcomeSucceeded          Outcome = "succeeded"
+	OutcomeFailed             Outcome = "failed"
 )
 
 type Receipt struct {
-	ID              string          `json:"id"`
-	TenantID        string          `json:"tenant_id"`
-	SessionID       string          `json:"session_id"`
-	ActionID        string          `json:"action_id"`
-	ActionDigest    string          `json:"action_digest"`
-	Decision        policy.Decision `json:"decision"`
-	Outcome         Outcome         `json:"outcome"`
-	ProviderReceipt string          `json:"provider_receipt,omitempty"`
-	RecordedAt      time.Time       `json:"recorded_at"`
+	ID              string                `json:"id"`
+	TenantID        string                `json:"tenant_id"`
+	SessionID       string                `json:"session_id"`
+	ActionID        string                `json:"action_id"`
+	ActionDigest    string                `json:"action_digest"`
+	Action          domain.ActionEnvelope `json:"action"`
+	Decision        policy.Decision       `json:"decision"`
+	Outcome         Outcome               `json:"outcome"`
+	ProviderReceipt string                `json:"provider_receipt,omitempty"`
+	RecordedAt      time.Time             `json:"recorded_at"`
 }
 
 func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome Outcome, providerReceipt string, recordedAt time.Time) (Receipt, error) {
@@ -43,7 +45,7 @@ func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome 
 		return Receipt{}, errors.New("recorded_at is required")
 	}
 	switch outcome {
-	case OutcomeBlocked, OutcomeApproved, OutcomeSucceeded, OutcomeFailed:
+	case OutcomeBlocked, OutcomeWaitingForApproval, OutcomeApproved, OutcomeSucceeded, OutcomeFailed:
 	default:
 		return Receipt{}, fmt.Errorf("invalid receipt outcome %q", outcome)
 	}
@@ -64,7 +66,7 @@ func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome 
 	}
 	return Receipt{
 		ID: id, TenantID: action.TenantID, SessionID: action.SessionID,
-		ActionID: action.ID, ActionDigest: actionDigest, Decision: decision,
+		ActionID: action.ID, ActionDigest: actionDigest, Action: action, Decision: decision,
 		Outcome: outcome, ProviderReceipt: providerReceipt, RecordedAt: recordedAt.UTC(),
 	}, nil
 }
