@@ -64,6 +64,9 @@ func TestPreAndPostProduceDurableBoundReceipts(t *testing.T) {
 	if len(control.receipts) != 1 || control.receipts[0].Outcome != spool.OutcomeApproved {
 		t.Fatalf("local receipt did not replay: %#v", control.receipts)
 	}
+	if control.receipts[0].VerificationState != spool.VerificationNotRequested {
+		t.Fatalf("policy decision must not claim execution verification: %#v", control.receipts[0])
+	}
 	if control.receipts[0].Action.Operation != "aws.ec2.DescribeInstances" {
 		t.Fatalf("action was not preserved in receipt: %#v", control.receipts[0])
 	}
@@ -77,6 +80,9 @@ func TestPreAndPostProduceDurableBoundReceipts(t *testing.T) {
 	}
 	if len(control.receipts) != 2 || control.receipts[1].Outcome != spool.OutcomeSucceeded {
 		t.Fatalf("unexpected post receipts: %#v", control.receipts)
+	}
+	if control.receipts[1].VerificationState != spool.VerificationObserved {
+		t.Fatalf("native hook completion must remain observed: %#v", control.receipts[1])
 	}
 	if control.receipts[1].ProviderReceipt == "" || control.receipts[1].ProviderReceipt == "must-not-be-stored" {
 		t.Fatal("provider output must be represented only by a digest")
@@ -196,6 +202,9 @@ func TestClaudePostToolUseFailureProducesFailedReceipt(t *testing.T) {
 	}
 	if len(control.receipts) != 2 || control.receipts[1].Outcome != spool.OutcomeFailed {
 		t.Fatalf("Claude failure was not recorded: %#v", control.receipts)
+	}
+	if control.receipts[1].VerificationState != spool.VerificationObserved {
+		t.Fatalf("native hook failure must remain observed: %#v", control.receipts[1])
 	}
 	if control.receipts[1].ProviderReceipt != "" {
 		t.Fatal("raw Claude failure text must not be retained as a provider receipt")

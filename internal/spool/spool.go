@@ -25,17 +25,25 @@ const (
 )
 
 type Receipt struct {
-	ID              string                `json:"id"`
-	TenantID        string                `json:"tenant_id"`
-	SessionID       string                `json:"session_id"`
-	ActionID        string                `json:"action_id"`
-	ActionDigest    string                `json:"action_digest"`
-	Action          domain.ActionEnvelope `json:"action"`
-	Decision        policy.Decision       `json:"decision"`
-	Outcome         Outcome               `json:"outcome"`
-	ProviderReceipt string                `json:"provider_receipt,omitempty"`
-	RecordedAt      time.Time             `json:"recorded_at"`
+	ID                string                `json:"id"`
+	TenantID          string                `json:"tenant_id"`
+	SessionID         string                `json:"session_id"`
+	ActionID          string                `json:"action_id"`
+	ActionDigest      string                `json:"action_digest"`
+	Action            domain.ActionEnvelope `json:"action"`
+	Decision          policy.Decision       `json:"decision"`
+	Outcome           Outcome               `json:"outcome"`
+	ProviderReceipt   string                `json:"provider_receipt,omitempty"`
+	VerificationState VerificationState     `json:"verification_state"`
+	RecordedAt        time.Time             `json:"recorded_at"`
 }
+
+type VerificationState string
+
+const (
+	VerificationNotRequested VerificationState = "not_requested"
+	VerificationObserved     VerificationState = "observed"
+)
 
 func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome Outcome, providerReceipt string, recordedAt time.Time) (Receipt, error) {
 	if err := action.Validate(); err != nil {
@@ -54,12 +62,13 @@ func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome 
 		return Receipt{}, err
 	}
 	identity := struct {
-		TenantID     string          `json:"tenant_id"`
-		SessionID    string          `json:"session_id"`
-		ActionDigest string          `json:"action_digest"`
-		Decision     policy.Decision `json:"decision"`
-		Outcome      Outcome         `json:"outcome"`
-	}{action.TenantID, action.SessionID, actionDigest, decision, outcome}
+		TenantID          string            `json:"tenant_id"`
+		SessionID         string            `json:"session_id"`
+		ActionDigest      string            `json:"action_digest"`
+		Decision          policy.Decision   `json:"decision"`
+		Outcome           Outcome           `json:"outcome"`
+		VerificationState VerificationState `json:"verification_state"`
+	}{action.TenantID, action.SessionID, actionDigest, decision, outcome, verificationForOutcome(outcome)}
 	id, err := domain.Digest(identity)
 	if err != nil {
 		return Receipt{}, err
@@ -67,8 +76,18 @@ func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome 
 	return Receipt{
 		ID: id, TenantID: action.TenantID, SessionID: action.SessionID,
 		ActionID: action.ID, ActionDigest: actionDigest, Action: action, Decision: decision,
-		Outcome: outcome, ProviderReceipt: providerReceipt, RecordedAt: recordedAt.UTC().Truncate(time.Microsecond),
+		Outcome: outcome, ProviderReceipt: providerReceipt, VerificationState: verificationForOutcome(outcome),
+		RecordedAt: recordedAt.UTC().Truncate(time.Microsecond),
 	}, nil
+}
+
+func verificationForOutcome(outcome Outcome) VerificationState {
+	switch outcome {
+	case OutcomeSucceeded, OutcomeFailed:
+		return VerificationObserved
+	default:
+		return VerificationNotRequested
+	}
 }
 
 type Store struct {

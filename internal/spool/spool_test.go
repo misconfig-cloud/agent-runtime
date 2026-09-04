@@ -23,6 +23,9 @@ func TestReceiptSpoolIsIdempotentAndDurable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if receipt.VerificationState != VerificationNotRequested {
+		t.Fatalf("decision receipt claimed verification: %#v", receipt)
+	}
 	store := Store{Root: t.TempDir()}
 	if err := store.Put(receipt); err != nil {
 		t.Fatal(err)
