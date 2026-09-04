@@ -32,6 +32,7 @@ type stubControl struct {
 	signed      policy.SignedBundle
 	created     controlclient.CreateProfileRequest
 	stopped     []string
+	receipts    []spool.Receipt
 }
 
 func (s *stubControl) Enroll(_ context.Context, token, _, _, _, _ string) (controlclient.Enrollment, error) {
@@ -70,7 +71,10 @@ func (s *stubControl) Stop(_ context.Context, sessionID, _ string) error {
 	s.stopped = append(s.stopped, sessionID)
 	return nil
 }
-func (s *stubControl) PutReceipt(context.Context, spool.Receipt) error { return nil }
+func (s *stubControl) PutReceipt(_ context.Context, receipt spool.Receipt) error {
+	s.receipts = append(s.receipts, receipt)
+	return nil
+}
 
 func TestSetupAcceptsSecretSourcesButNeverArgv(t *testing.T) {
 	tests := []struct {
@@ -418,6 +422,45 @@ func TestStatusAndUninstallAreLimitedToThisDevice(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("local state still exists after uninstall: %v", err)
+	}
+}
+
+func TestSyncReplaysDurableReceiptsWithoutStartingAnAgent(t *testing.T) {
+	root := t.TempDir()
+	control := enrolledStub()
+	seedEnrollment(t, root, control)
+	now := time.Date(2026, 9, 4, 17, 0, 0, 0, time.UTC)
+	action := domain.ActionEnvelope{
+		ID: "action-sync", TenantID: "tenant-1", ActorID: "actor-1", DeviceID: "device-1",
+		SessionID: "session-sync", Agent: domain.AgentCodex, AdapterRelease: "codex@1",
+		Tool: "Bash", Operation: "aws.sts.GetCallerIdentity", Resource: "aws://123456789012",
+		Destination: domain.Destination{Provider: "aws", AccountRef: "123456789012", Environment: "production"},
+		RequestedAt: now,
+	}
+	receipt, err := spool.NewReceipt(action, policy.Decision{
+		Effect: policy.EffectAllow, RuleID: "allow-sts", PolicyRelease: "policy@1",
+	}, spool.OutcomeApproved, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := localstate.Store{Root: root, FileTokens: true}
+	if err := (spool.Store{Root: store.ReceiptRoot()}).Put(receipt); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := &App{Out: &out, Err: io.Discard, StateRoot: root, FileTokens: true, NewControl: func(_, _, _ string) Control { return control }}
+	if err := app.Run(context.Background(), []string{"sync"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.receipts) != 1 || control.receipts[0].ID != receipt.ID {
+		t.Fatalf("sync did not upload the durable receipt once: %#v", control.receipts)
+	}
+	pending, err := (spool.Store{Root: store.ReceiptRoot()}).Pending()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("sync left pending receipts: %#v %v", pending, err)
+	}
+	if !strings.Contains(out.String(), "1 pending receipt(s) synchronized") {
+		t.Fatalf("sync result was not explained: %s", out.String())
 	}
 }
 

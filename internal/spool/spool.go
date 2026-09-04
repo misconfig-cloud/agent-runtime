@@ -67,7 +67,7 @@ func NewReceipt(action domain.ActionEnvelope, decision policy.Decision, outcome 
 	return Receipt{
 		ID: id, TenantID: action.TenantID, SessionID: action.SessionID,
 		ActionID: action.ID, ActionDigest: actionDigest, Action: action, Decision: decision,
-		Outcome: outcome, ProviderReceipt: providerReceipt, RecordedAt: recordedAt.UTC(),
+		Outcome: outcome, ProviderReceipt: providerReceipt, RecordedAt: recordedAt.UTC().Truncate(time.Microsecond),
 	}, nil
 }
 
@@ -89,21 +89,47 @@ func (s Store) Put(receipt Receipt) error {
 	}
 	path := filepath.Join(directory, filename(receipt.ID))
 	if existing, err := os.ReadFile(path); err == nil {
-		if string(existing) != string(encoded) {
+		if !sameReceipt(existing, encoded) {
 			return errors.New("receipt identity collision")
 		}
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read existing receipt: %w", err)
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+	temporary, err := os.CreateTemp(directory, ".receipt-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create receipt temp file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("protect receipt: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write receipt: %w", err)
 	}
-	if err := os.Rename(temporary, path); err != nil {
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync receipt: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close receipt: %w", err)
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := os.ReadFile(path)
+			if readErr == nil && sameReceipt(existing, encoded) {
+				return nil
+			}
+			if readErr == nil {
+				return errors.New("receipt identity collision")
+			}
+		}
 		return fmt.Errorf("commit receipt: %w", err)
 	}
-	return nil
+	return syncDirectory(directory)
 }
 
 func (s Store) Pending() ([]Receipt, error) {
@@ -152,9 +178,41 @@ func (s Store) MarkSent(id string) error {
 		return nil
 	}
 	if err := os.Rename(from, to); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if _, sentErr := os.Stat(to); sentErr == nil {
+				return nil
+			}
+		}
 		return fmt.Errorf("mark receipt sent: %w", err)
 	}
+	if err := syncDirectory(filepath.Dir(from)); err != nil {
+		return fmt.Errorf("sync pending receipt directory: %w", err)
+	}
+	if err := syncDirectory(filepath.Dir(to)); err != nil {
+		return fmt.Errorf("sync sent receipt directory: %w", err)
+	}
 	return nil
+}
+
+func sameReceipt(left, right []byte) bool {
+	var a, b Receipt
+	if json.Unmarshal(left, &a) != nil || json.Unmarshal(right, &b) != nil {
+		return false
+	}
+	a.RecordedAt = time.Time{}
+	b.RecordedAt = time.Time{}
+	encodedA, _ := json.Marshal(a)
+	encodedB, _ := json.Marshal(b)
+	return string(encodedA) == string(encodedB)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func filename(id string) string {

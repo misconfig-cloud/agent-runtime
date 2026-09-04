@@ -4,7 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/misconfig-cloud/agent-runtime/internal/domain"
+	"github.com/misconfig-cloud/agent-runtime/internal/policy"
 )
 
 func TestDefaultRootHonorsMisconfigHome(t *testing.T) {
@@ -37,5 +42,59 @@ func TestFileTokenModeUsesPrivateLocalState(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("token survived deletion: %v", err)
+	}
+}
+
+func TestLoadOrSaveActionPreservesOneIdentityAcrossConcurrentHooks(t *testing.T) {
+	store := Store{Root: t.TempDir()}
+	const workers = 12
+	results := make(chan PendingAction, workers)
+	errorsByWorker := make(chan error, workers)
+	var wait sync.WaitGroup
+	for index := 0; index < workers; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			candidate := PendingAction{
+				Action: domain.ActionEnvelope{
+					ID: "action-" + string(rune('a'+index)), TenantID: "tenant-1", ActorID: "actor-1",
+					DeviceID: "device-1", SessionID: "session-1", Agent: domain.AgentCodex,
+					AdapterRelease: "codex@1", Tool: "Bash", Operation: "aws.sts.GetCallerIdentity",
+					Resource: "aws://123456789012", Destination: domain.Destination{Provider: "aws", AccountRef: "123456789012", Environment: "production"},
+					RequestedAt: time.Date(2026, 9, 4, 16, index, 0, 0, time.UTC),
+				},
+				Decision:    policy.Decision{Effect: policy.EffectAllow, RuleID: "allow-sts", PolicyRelease: "policy@1"},
+				InputDigest: "sha256:same-native-input",
+			}
+			result, err := store.LoadOrSaveAction("session-1", "tool-use-1", candidate)
+			if err != nil {
+				errorsByWorker <- err
+				return
+			}
+			results <- result
+		}(index)
+	}
+	wait.Wait()
+	close(results)
+	close(errorsByWorker)
+	for err := range errorsByWorker {
+		t.Fatal(err)
+	}
+	identity := ""
+	for result := range results {
+		if identity == "" {
+			identity = result.Action.ID
+		}
+		if result.Action.ID != identity {
+			t.Fatalf("concurrent hooks observed different action identities: %q and %q", identity, result.Action.ID)
+		}
+	}
+	if identity == "" {
+		t.Fatal("no action identity was returned")
+	}
+
+	_, err := store.LoadOrSaveAction("session-1", "tool-use-1", PendingAction{InputDigest: "sha256:different-input"})
+	if err == nil || err.Error() != "native action correlation identity collision" {
+		t.Fatalf("changed input reused the native correlation key: %v", err)
 	}
 }

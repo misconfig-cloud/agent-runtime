@@ -30,8 +30,9 @@ type ActiveSession struct {
 }
 
 type PendingAction struct {
-	Action   domain.ActionEnvelope `json:"action"`
-	Decision policy.Decision       `json:"decision"`
+	Action      domain.ActionEnvelope `json:"action"`
+	Decision    policy.Decision       `json:"decision"`
+	InputDigest string                `json:"input_digest"`
 }
 
 type Store struct {
@@ -84,6 +85,32 @@ func LoadActive(path string) (ActiveSession, error) {
 
 func (s Store) SaveAction(sessionID, key string, action PendingAction) error {
 	return writeJSON(filepath.Join(s.Root, "actions", sessionID, safe(key)+".json"), action)
+}
+
+// LoadOrSaveAction gives a native hook retry the exact action identity and
+// timestamp created by its first invocation. The filesystem link is the
+// commit point, so concurrent duplicate hooks cannot replace one another.
+func (s Store) LoadOrSaveAction(sessionID, key string, candidate PendingAction) (PendingAction, error) {
+	path := filepath.Join(s.Root, "actions", safe(sessionID), safe(key)+".json")
+	encoded, err := json.MarshalIndent(candidate, "", "  ")
+	if err != nil {
+		return PendingAction{}, err
+	}
+	encoded = append(encoded, '\n')
+	if err := writeOnce(path, encoded); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return PendingAction{}, err
+		}
+		var existing PendingAction
+		if err := readJSON(path, &existing); err != nil {
+			return PendingAction{}, err
+		}
+		if existing.InputDigest == "" || existing.InputDigest != candidate.InputDigest {
+			return PendingAction{}, errors.New("native action correlation identity collision")
+		}
+		return existing, nil
+	}
+	return candidate, nil
 }
 
 func (s Store) MarkStopped(sessionID string) error {
@@ -186,11 +213,72 @@ func writeSecret(path, value string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temporary := path + ".tmp"
-	if err := os.WriteFile(temporary, []byte(value), 0o600); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".misconfig-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(temporary, path)
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write([]byte(value)); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
+func writeOnce(path string, encoded []byte) error {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(directory, ".misconfig-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		return err
+	}
+	return syncDirectory(directory)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func safe(value string) string {

@@ -102,6 +102,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runSession(ctx, args[1:])
 	case "status":
 		return a.status(ctx, args[1:])
+	case "sync":
+		return a.sync(ctx, args[1:])
 	case "uninstall":
 		return a.uninstall(ctx, args[1:])
 	case "hook":
@@ -456,6 +458,9 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := (enforcement.Engine{Store: store, Control: control, Now: a.Now}).Replay(ctx); err != nil {
+		return fmt.Errorf("sync pending receipts before session start: %w", err)
+	}
 	profiles, err := control.Profiles(ctx)
 	if err != nil {
 		return fmt.Errorf("list profiles: %w", err)
@@ -701,6 +706,30 @@ func (a *App) status(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (a *App) sync(ctx context.Context, args []string) error {
+	flags := a.flags("sync")
+	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
+		if err == nil {
+			err = errors.New("sync does not accept positional arguments")
+		}
+		return exitError{code: 2, err: err}
+	}
+	store, _, control, err := a.authenticated()
+	if err != nil {
+		return err
+	}
+	spoolStore := spool.Store{Root: store.ReceiptRoot()}
+	before, err := spoolStore.Pending()
+	if err != nil {
+		return fmt.Errorf("inspect pending receipts: %w", err)
+	}
+	if err := (enforcement.Engine{Store: store, Control: control, Now: a.Now}).Replay(ctx); err != nil {
+		return fmt.Errorf("sync pending receipts: %w", err)
+	}
+	fmt.Fprintf(a.Out, "%d pending receipt(s) synchronized.\n", len(before))
+	return nil
+}
+
 func (a *App) uninstall(ctx context.Context, args []string) error {
 	flags := a.flags("uninstall")
 	yes := flags.Bool("yes", false, "confirm removal")
@@ -834,7 +863,7 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|run|status|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|run|status|sync|uninstall>")
 	fmt.Fprintln(a.Err, "       misconfig profile <create|list>")
 }
 

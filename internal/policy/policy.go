@@ -212,12 +212,37 @@ func (c Cache) Store(bundle SignedBundle) error {
 	if err := os.MkdirAll(filepath.Dir(c.Path), 0o700); err != nil {
 		return fmt.Errorf("create policy directory: %w", err)
 	}
-	temporary := c.Path + ".tmp"
-	if err := os.WriteFile(temporary, encoded, 0o600); err != nil {
+	temporary, err := os.CreateTemp(filepath.Dir(c.Path), ".policy-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create policy cache: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("protect policy cache: %w", err)
+	}
+	if _, err := temporary.Write(encoded); err != nil {
+		_ = temporary.Close()
 		return fmt.Errorf("write policy cache: %w", err)
 	}
-	if err := os.Rename(temporary, c.Path); err != nil {
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("sync policy cache: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close policy cache: %w", err)
+	}
+	if err := os.Rename(temporaryPath, c.Path); err != nil {
 		return fmt.Errorf("replace policy cache: %w", err)
+	}
+	directory, err := os.Open(filepath.Dir(c.Path))
+	if err != nil {
+		return fmt.Errorf("open policy cache directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync policy cache directory: %w", err)
 	}
 	return nil
 }

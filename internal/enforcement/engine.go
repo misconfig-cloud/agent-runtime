@@ -45,24 +45,41 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 	if err != nil {
 		return Result{}, err
 	}
+	inputDigest, err := hook.InputDigest(input)
+	if err != nil {
+		return Result{}, err
+	}
 	signed, err := e.cachedPolicy(config, active, publicKey)
 	if err != nil {
 		decision := policy.Decision{
 			Effect: policy.EffectDeny, RuleID: "misconfig.policy.unavailable",
 			Reason: "a current signed policy is unavailable", PolicyRelease: active.Profile.PolicyRelease,
 		}
-		_ = e.record(action, decision, spool.OutcomeBlocked, "")
+		persisted, persistErr := e.Store.LoadOrSaveAction(active.Session.ID, hook.CorrelationKey(input), localstate.PendingAction{
+			Action: action, Decision: decision, InputDigest: inputDigest,
+		})
+		if persistErr != nil {
+			return Result{}, fmt.Errorf("persist native action identity: %w", persistErr)
+		}
+		action, decision = persisted.Action, persisted.Decision
+		if recordErr := e.record(action, decision, spool.OutcomeBlocked, ""); recordErr != nil {
+			return Result{}, recordErr
+		}
 		return Result{Decision: decision, Action: action}, nil
 	}
 	decision := (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
+	persisted, err := e.Store.LoadOrSaveAction(active.Session.ID, hook.CorrelationKey(input), localstate.PendingAction{
+		Action: action, Decision: decision, InputDigest: inputDigest,
+	})
+	if err != nil {
+		return Result{}, fmt.Errorf("persist native action identity: %w", err)
+	}
+	action, decision = persisted.Action, persisted.Decision
 
 	outcome := spool.OutcomeBlocked
 	switch decision.Effect {
 	case policy.EffectAllow:
 		outcome = spool.OutcomeApproved
-		if err := e.Store.SaveAction(active.Session.ID, hook.CorrelationKey(input), localstate.PendingAction{Action: action, Decision: decision}); err != nil {
-			return Result{}, fmt.Errorf("persist pending action: %w", err)
-		}
 	case policy.EffectApproval:
 		outcome = spool.OutcomeWaitingForApproval
 	case policy.EffectStop:
@@ -98,7 +115,7 @@ func (e Engine) Post(ctx context.Context, activePath string, input hook.Input) e
 		// Codex currently emits raw strings for several successful and failed
 		// built-in tools. A raw string has no stable success bit, so retaining
 		// only the pre-tool approval is more honest than inventing success.
-		return e.Store.DeleteAction(active.Session.ID, key)
+		return nil
 	}
 	receiptDigest := ""
 	if input.ToolResponse != nil {
@@ -107,7 +124,7 @@ func (e Engine) Post(ctx context.Context, activePath string, input hook.Input) e
 	if err := e.record(pending.Action, pending.Decision, outcome, receiptDigest); err != nil {
 		return err
 	}
-	return e.Store.DeleteAction(active.Session.ID, key)
+	return nil
 }
 
 func (e Engine) Replay(ctx context.Context) error {

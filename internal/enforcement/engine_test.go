@@ -222,6 +222,54 @@ func TestEvaluationUsesOnlyVerifiedUnexpiredCache(t *testing.T) {
 	if err != nil || result.Decision.RuleID != "misconfig.policy.unavailable" {
 		t.Fatalf("expired offline cache did not fail closed: %#v %v", result.Decision, err)
 	}
+	firstAction := result.Action
+	restarted := Engine{Store: engine.Store, Control: control, Now: engine.Now}
+	result, err = restarted.Pre(context.Background(), activePath, hook.Input{
+		HookEventName: "PreToolUse", ToolName: "Bash", ToolUseID: "expired",
+		ToolInput: map[string]any{"command": "aws ec2 describe-instances"},
+	})
+	if err != nil || result.Action.ID != firstAction.ID || !result.Action.RequestedAt.Equal(firstAction.RequestedAt) {
+		t.Fatalf("expired-cache retry changed its denied action identity: %#v %v", result.Action, err)
+	}
+}
+
+func TestNativeHookRetryReusesActionAndReceiptAcrossRestart(t *testing.T) {
+	engine, control, activePath, now := fixture(t, policy.EffectAllow)
+	input := hook.Input{
+		SessionID: "native-session", HookEventName: "PreToolUse", ToolName: "Bash", ToolUseID: "retry-tool-use",
+		ToolInput: map[string]any{"command": "aws sts get-caller-identity"},
+	}
+	// The fixture policy names EC2, so use the same classified operation while
+	// proving identity reuse independently of the wall clock.
+	input.ToolInput["command"] = "aws ec2 describe-instances --region eu-central-1"
+	first, err := engine.Pre(context.Background(), activePath, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine.Now = func() time.Time { return now.Add(5 * time.Minute) }
+	restarted := Engine{Store: engine.Store, Control: control, Now: engine.Now}
+	second, err := restarted.Pre(context.Background(), activePath, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Action.ID != first.Action.ID || !second.Action.RequestedAt.Equal(first.Action.RequestedAt) {
+		t.Fatalf("native retry changed action identity: first=%#v second=%#v", first.Action, second.Action)
+	}
+	pending, err := (spool.Store{Root: engine.Store.ReceiptRoot()}).Pending()
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("native retry duplicated the decision receipt: %#v %v", pending, err)
+	}
+	if err := restarted.Replay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.receipts) != 1 {
+		t.Fatalf("native retry uploaded %d decision receipts", len(control.receipts))
+	}
+
+	input.ToolInput["command"] = "aws ec2 describe-instances --region us-east-1"
+	if _, err := restarted.Pre(context.Background(), activePath, input); err == nil {
+		t.Fatal("changed input reused a native tool-use identity")
+	}
 }
 
 func fixture(t *testing.T, effect policy.Effect) (Engine, *fakeControl, string, time.Time) {

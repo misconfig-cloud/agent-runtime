@@ -79,6 +79,14 @@ func CorrelationKey(input Input) string {
 	return digest
 }
 
+func InputDigest(input Input) (string, error) {
+	return domain.Digest(struct {
+		ToolName  string         `json:"tool_name"`
+		ToolInput map[string]any `json:"tool_input"`
+		ToolUseID string         `json:"tool_use_id"`
+	}{input.ToolName, input.ToolInput, input.ToolUseID})
+}
+
 func commandFrom(input Input) string {
 	for _, key := range []string{"command", "cmd", "script"} {
 		if value, ok := input.ToolInput[key].(string); ok {
