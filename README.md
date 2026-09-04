@@ -31,7 +31,7 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.2
+VERSION=0.1.4
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
@@ -80,17 +80,15 @@ Installation stages and verifies the new binary in the destination directory,
 then replaces the old binary atomically. If post-install verification fails,
 the previous runtime is restored.
 
-Enroll without putting the short-lived token in shell history or the process
-argument list:
+Pair the device through the authenticated browser flow. The runtime previews
+every local change before it opens the one-time approval page:
 
 ```sh
-printf '%s' "$MISCONFIG_ENROLLMENT_TOKEN" | misconfig setup \
-  --control https://sessions.misconfig.cloud \
-  --tenant TENANT \
-  --actor EMAIL \
-  --token-file -
-unset MISCONFIG_ENROLLMENT_TOKEN
+misconfig setup --control https://sessions.misconfig.cloud
 ```
+
+An operator-issued enrollment token remains available as a recovery path. Read
+it from a protected file or stdin; never place it on the command line.
 
 The extracted `uninstall.sh --yes` removes runtime state and the installed
 binary. Pass `--keep-state` only when intentionally preserving local state.
@@ -122,18 +120,11 @@ release signing key.
 
 ## Enrol one device
 
-An operator obtains a short-lived founder-staging enrollment token out of band.
-The token is read from a protected file, stdin, or
-`MISCONFIG_ENROLLMENT_TOKEN`; it is never accepted on the command line.
+The default flow creates a short-lived code, opens the authenticated console,
+and waits for the signed-in tenant to approve the exact device:
 
 ```sh
-./bin/misconfig setup \
-  --control https://sessions.misconfig.cloud \
-  --tenant tenant-founder-staging \
-  --tenant-name "Misconfig founder staging" \
-  --actor you@example.com \
-  --device "work-mac" \
-  --token-file /path/to/enrollment-token
+./bin/misconfig setup --control https://sessions.misconfig.cloud
 ```
 
 On macOS the returned device credential is stored in Keychain. Other current
