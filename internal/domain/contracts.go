@@ -157,6 +157,21 @@ type Destination struct {
 	Location    string `json:"location,omitempty"`
 }
 
+// NativeActionIdentity contains only the redacted correlation coordinates
+// exposed by an agent client's hook protocol. It deliberately excludes the
+// transcript path, working directory, prompt, command output, and credentials.
+type NativeActionIdentity struct {
+	SessionID       string `json:"session_id,omitempty"`
+	TurnID          string `json:"turn_id,omitempty"`
+	ToolUseID       string `json:"tool_use_id,omitempty"`
+	ParentToolUseID string `json:"parent_tool_use_id,omitempty"`
+	AgentID         string `json:"agent_id,omitempty"`
+	AgentType       string `json:"agent_type,omitempty"`
+	Model           string `json:"model,omitempty"`
+	PermissionMode  string `json:"permission_mode,omitempty"`
+	PathClass       string `json:"path_class,omitempty"`
+}
+
 type ActionEnvelope struct {
 	ID             string                 `json:"id"`
 	TenantID       string                 `json:"tenant_id"`
@@ -169,6 +184,7 @@ type ActionEnvelope struct {
 	Operation      string                 `json:"operation"`
 	Resource       string                 `json:"resource"`
 	Destination    Destination            `json:"destination"`
+	Native         NativeActionIdentity   `json:"native,omitempty"`
 	Parameters     map[string]interface{} `json:"parameters,omitempty"`
 	RequestedAt    time.Time              `json:"requested_at"`
 }

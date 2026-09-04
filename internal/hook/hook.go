@@ -12,22 +12,23 @@ import (
 )
 
 type Input struct {
-	SessionID      string         `json:"session_id"`
-	TurnID         string         `json:"turn_id,omitempty"`
-	TranscriptPath string         `json:"transcript_path,omitempty"`
-	Model          string         `json:"model,omitempty"`
-	PermissionMode string         `json:"permission_mode,omitempty"`
-	AgentID        string         `json:"agent_id,omitempty"`
-	AgentType      string         `json:"agent_type,omitempty"`
-	HookEventName  string         `json:"hook_event_name"`
-	ToolName       string         `json:"tool_name"`
-	ToolInput      map[string]any `json:"tool_input"`
-	ToolResponse   any            `json:"tool_response,omitempty"`
-	ToolUseID      string         `json:"tool_use_id"`
-	Error          string         `json:"error,omitempty"`
-	IsInterrupt    bool           `json:"is_interrupt,omitempty"`
-	DurationMS     int64          `json:"duration_ms,omitempty"`
-	CWD            string         `json:"cwd"`
+	SessionID       string         `json:"session_id"`
+	TurnID          string         `json:"turn_id,omitempty"`
+	TranscriptPath  string         `json:"transcript_path,omitempty"`
+	Model           string         `json:"model,omitempty"`
+	PermissionMode  string         `json:"permission_mode,omitempty"`
+	AgentID         string         `json:"agent_id,omitempty"`
+	AgentType       string         `json:"agent_type,omitempty"`
+	ParentToolUseID string         `json:"parent_tool_use_id,omitempty"`
+	HookEventName   string         `json:"hook_event_name"`
+	ToolName        string         `json:"tool_name"`
+	ToolInput       map[string]any `json:"tool_input"`
+	ToolResponse    any            `json:"tool_response,omitempty"`
+	ToolUseID       string         `json:"tool_use_id"`
+	Error           string         `json:"error,omitempty"`
+	IsInterrupt     bool           `json:"is_interrupt,omitempty"`
+	DurationMS      int64          `json:"duration_ms,omitempty"`
+	CWD             string         `json:"cwd"`
 }
 
 var arnPattern = regexp.MustCompile(`arn:(?:aws|aws-us-gov|aws-cn):[^\s"']+`)
@@ -66,8 +67,24 @@ func Action(activeProfile domain.SessionProfile, session domain.AgentSession, in
 		SessionID: session.ID, Agent: activeProfile.Agent, AdapterRelease: activeProfile.AdapterRelease,
 		Tool: input.ToolName, Operation: operation, Resource: resource,
 		Destination: domain.Destination{Provider: provider, AccountRef: activeProfile.Scope.AccountRef, Environment: activeProfile.Scope.Environments[0], Location: location},
+		Native:      nativeIdentity(input),
 		Parameters:  map[string]any{"hook_tool_use_id": key, "command": redactCommand(command)}, RequestedAt: now.UTC(),
 	}, nil
+}
+
+func nativeIdentity(input Input) domain.NativeActionIdentity {
+	pathClass := "direct"
+	if strings.TrimSpace(input.ParentToolUseID) != "" {
+		pathClass = "nested"
+	} else if strings.TrimSpace(input.AgentID) != "" {
+		pathClass = "subagent"
+	}
+	return domain.NativeActionIdentity{
+		SessionID: strings.TrimSpace(input.SessionID), TurnID: strings.TrimSpace(input.TurnID),
+		ToolUseID: strings.TrimSpace(input.ToolUseID), ParentToolUseID: strings.TrimSpace(input.ParentToolUseID),
+		AgentID: strings.TrimSpace(input.AgentID), AgentType: strings.TrimSpace(input.AgentType),
+		Model: strings.TrimSpace(input.Model), PermissionMode: strings.TrimSpace(input.PermissionMode), PathClass: pathClass,
+	}
 }
 
 func CorrelationKey(input Input) string {

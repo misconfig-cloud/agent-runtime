@@ -1,6 +1,8 @@
 package hook
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,5 +132,28 @@ func TestNativeShellToolsShareOneStableOperation(t *testing.T) {
 				t.Fatalf("operation = %q, want shell.Execute", action.Operation)
 			}
 		})
+	}
+}
+
+func TestActionRetainsOnlySafeNativeCorrelation(t *testing.T) {
+	profile := domain.SessionProfile{Agent: domain.AgentCodex, AdapterRelease: "codex@0.152.0", Scope: domain.Scope{
+		Provider: "aws", AccountRef: "123456789012", Environments: []string{"production"},
+	}}
+	session := domain.AgentSession{ID: "session-1", TenantID: "tenant-1", ActorID: "actor-1", DeviceID: "device-1"}
+	action, err := Action(profile, session, Input{
+		SessionID: "native-session", TurnID: "turn-1", ToolUseID: "tool-1", ParentToolUseID: "parent-1",
+		AgentID: "agent-1", AgentType: "worker", Model: "gpt-5.6-codex", PermissionMode: "full-access",
+		TranscriptPath: "/private/transcript.jsonl", CWD: "/private/worktree", HookEventName: "PreToolUse",
+		ToolName: "shell", ToolInput: map[string]any{"command": "aws sts get-caller-identity"},
+	}, time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Native.PathClass != "nested" || action.Native.ParentToolUseID != "parent-1" || action.Native.AgentID != "agent-1" {
+		t.Fatalf("native identity = %#v", action.Native)
+	}
+	encoded := fmt.Sprintf("%#v", action)
+	if strings.Contains(encoded, "transcript.jsonl") || strings.Contains(encoded, "/private/worktree") {
+		t.Fatalf("private host paths leaked into action: %s", encoded)
 	}
 }

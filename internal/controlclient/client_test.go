@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
+	"github.com/misconfig-cloud/agent-runtime/internal/policy"
+	"github.com/misconfig-cloud/agent-runtime/internal/spool"
 )
 
 func TestStartSessionRefusesLegacyDigestDriftBeforeLaunch(t *testing.T) {
@@ -46,6 +48,46 @@ func TestStartSessionRefusesLegacyDigestDriftBeforeLaunch(t *testing.T) {
 	}
 	if starts.Load() != 0 {
 		t.Fatal("legacy profile reached session creation before migration")
+	}
+}
+
+func TestPutReceiptProjectsSafeNativeActionIdentity(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	action := domain.ActionEnvelope{
+		ID: "action-a", TenantID: "tenant-a", ActorID: "actor-a", DeviceID: "device-a", SessionID: "session-a",
+		Agent: domain.AgentCodex, AdapterRelease: "codex@0.152.0", Tool: "shell", Operation: "aws.sts.GetCallerIdentity",
+		Resource: "aws://123456789012", Destination: domain.Destination{Provider: "aws", AccountRef: "123456789012", Environment: "production"},
+		Native:      domain.NativeActionIdentity{SessionID: "native-a", TurnID: "turn-a", ToolUseID: "call-a", AgentID: "agent-a", AgentType: "worker", Model: "gpt-5.6-codex", PermissionMode: "full-access", PathClass: "subagent"},
+		RequestedAt: now,
+	}
+	receipt, err := spool.NewReceipt(action, policy.Decision{Effect: policy.EffectAllow, RuleID: "read", PolicyRelease: "policy-a"}, spool.OutcomeApproved, "", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (Client{BaseURL: server.URL, TenantID: "tenant-a", Token: "device-token"}).PutReceipt(context.Background(), receipt); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"native_session_id": "native-a", "native_turn_id": "turn-a", "native_tool_use_id": "call-a",
+		"native_agent_id": "agent-a", "native_agent_type": "worker", "native_model": "gpt-5.6-codex",
+		"native_permission_mode": "full-access", "native_path_class": "subagent",
+	} {
+		if received[key] != want {
+			t.Fatalf("%s = %#v, want %q", key, received[key], want)
+		}
+	}
+	for _, forbidden := range []string{"transcript_path", "cwd", "tool_response"} {
+		if _, ok := received[forbidden]; ok {
+			t.Fatalf("private field %q crossed the control boundary", forbidden)
+		}
 	}
 }
 

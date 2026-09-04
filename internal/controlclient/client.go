@@ -223,7 +223,12 @@ func (c Client) PutReceipt(ctx context.Context, receipt spool.Receipt) error {
 		"tool":               action.Tool, "operation": action.Operation, "resource": action.Resource,
 		"provider": action.Destination.Provider, "account_ref": action.Destination.AccountRef,
 		"environment": action.Destination.Environment, "location": action.Destination.Location,
-		"provider_receipt": receipt.ProviderReceipt, "recorded_at": receipt.RecordedAt,
+		"native_session_id": action.Native.SessionID, "native_turn_id": action.Native.TurnID,
+		"native_tool_use_id": action.Native.ToolUseID, "native_parent_tool_use_id": action.Native.ParentToolUseID,
+		"native_agent_id": action.Native.AgentID, "native_agent_type": action.Native.AgentType,
+		"native_model": action.Native.Model, "native_permission_mode": action.Native.PermissionMode,
+		"native_path_class": action.Native.PathClass,
+		"provider_receipt":  receipt.ProviderReceipt, "recorded_at": receipt.RecordedAt,
 	}
 	return c.request(ctx, http.MethodPost, "/v1/receipts", c.Token, c.TenantID, request, nil)
 }
