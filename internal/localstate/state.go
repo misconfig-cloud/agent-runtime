@@ -189,6 +189,20 @@ func (s Store) SaveRuntimeText(sessionID, name, value string) (string, error) {
 	return path, writeSecret(path, value)
 }
 
+func (s Store) SaveRuntimeExecutable(sessionID, name string, value []byte) (string, error) {
+	path := filepath.Join(s.Root, "runtime", safe(sessionID), safe(name))
+	return path, writeFileMode(path, value, 0o500)
+}
+
+func (s Store) SaveRuntimeFile(sessionID, name string, value []byte, mode os.FileMode) (string, error) {
+	path := filepath.Join(s.Root, "runtime", safe(sessionID), safe(name))
+	return path, writeFileMode(path, value, mode)
+}
+
+func (s Store) RuntimeDirectory(sessionID string) string {
+	return filepath.Join(s.Root, "runtime", safe(sessionID))
+}
+
 func (s Store) PolicyPath(sessionID string) string {
 	return filepath.Join(s.Root, "policies", safe(sessionID)+".json")
 }
@@ -215,6 +229,10 @@ func writeJSON(path string, value any) error {
 }
 
 func writeSecret(path, value string) error {
+	return writeFileMode(path, []byte(value), 0o600)
+}
+
+func writeFileMode(path string, value []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
@@ -224,11 +242,11 @@ func writeSecret(path, value string) error {
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := temporary.Chmod(mode); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write([]byte(value)); err != nil {
+	if _, err := temporary.Write(value); err != nil {
 		_ = temporary.Close()
 		return err
 	}

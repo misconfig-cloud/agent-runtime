@@ -5,15 +5,20 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
 
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
@@ -583,6 +588,107 @@ func TestRunSupportsACompiledUnfamiliarCredentialAdapter(t *testing.T) {
 	}
 }
 
+func TestRunDiscoversAndStagesAnAdmittedUnfamiliarCredentialRenderer(t *testing.T) {
+	t.Setenv("ORBITAL_TOKEN", "ambient-secret")
+	root := t.TempDir()
+	workspace := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SessionProfile{
+		ID: "profile-orbital-external", TenantID: "tenant-1", Name: "Orbital production", Agent: domain.AgentCodex,
+		Workspace: workspace,
+		Scope: domain.Scope{
+			Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
+			ResourcePrefixes: []string{"orbital://station-9/"},
+		},
+		Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
+		CredentialBinding: &domain.CredentialBinding{ConnectionID: "connection-orbital", ProviderRelease: "orbital-fabric.session@3.7.1"},
+		AdapterRelease:    "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+	}
+	profileDigest, err := domain.Digest(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.AgentSession{
+		ID: "session-orbital-external", TenantID: "tenant-1", ProfileID: profile.ID, ProfileDigest: profileDigest,
+		ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
+	}
+	signed, err := policy.Sign(policy.Bundle{
+		Release: "policy@1", TenantID: "tenant-1", ProfileID: profile.ID,
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		Rules: []policy.Rule{{ID: "allow-orbital-read", Effect: policy.EffectAllow, Providers: []string{"orbital-fabric"}, Reason: "bounded read"}},
+	}, "key-1", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := []byte("signed-unfamiliar-renderer")
+	source := filepath.Join(t.TempDir(), "orbital-renderer")
+	if err := os.WriteFile(source, artifact, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	artifactDigest := sha256.Sum256(artifact)
+	provider := controlclient.CredentialProvider{
+		Release: "orbital-fabric.session@3.7.1", Provider: "orbital-fabric", CredentialKind: "orbital.exec-token.v9",
+		MaximumTTLSeconds: 300, RevocationSemantics: "renewal-stops-token-expires",
+		ManifestDigest: "sha256:" + strings.Repeat("a", 64), PublisherID: "fixture-labs",
+		RendererProtocol: provideradapter.RendererProtocol, RendererExecutable: "orbital-renderer",
+		RendererArtifacts:    []controlclient.RendererArtifact{{OS: runtime.GOOS, Arch: runtime.GOARCH, Digest: "sha256:" + fmt.Sprintf("%x", artifactDigest)}},
+		SensitiveEnvironment: []string{"ORBITAL_TOKEN", "ORBITAL_CONFIG"},
+		AdmissionRequired:    true,
+	}
+	control := enrolledStub()
+	control.profiles = []domain.SessionProfile{profile}
+	control.started = session
+	control.signed = signed
+	control.credentialProviders = []controlclient.CredentialProvider{provider}
+	seedEnrollmentWithKey(t, root, control, base64.RawURLEncoding.EncodeToString(publicKey))
+
+	var configured provideradapter.ConfigureRequest
+	var launchedEnv []string
+	app := &App{
+		In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, StateRoot: root, FileTokens: true,
+		Now: func() time.Time { return now }, NewControl: func(_, _, _ string) Control { return control },
+		LookPath: func(name string) (string, error) {
+			if name == provider.RendererExecutable {
+				return source, nil
+			}
+			return "/usr/bin/" + name, nil
+		},
+		Executable: func() (string, error) { return "/opt/misconfig", nil },
+		RunRenderer: func(_ context.Context, path, operation string, input []byte) ([]byte, error) {
+			if operation != "configure" || filepath.Dir(path) != (localstate.Store{Root: root, FileTokens: true}).RuntimeDirectory(session.ID) {
+				t.Fatalf("renderer was not invoked from the session boundary: %q %q", path, operation)
+			}
+			if err := json.Unmarshal(input, &configured); err != nil {
+				t.Fatal(err)
+			}
+			return json.Marshal(provideradapter.RenderedEnvironment{
+				Remove: []string{"ORBITAL_TOKEN"}, Set: map[string]string{"ORBITAL_SESSION": session.ID},
+			})
+		},
+		RunCommand: func(_ context.Context, _ string, _ []string, _ string, environment []string, _ io.Reader, _, _ io.Writer) error {
+			launchedEnv = append([]string{}, environment...)
+			return nil
+		},
+	}
+	if err := app.Run(context.Background(), []string{"run", "--profile", profile.ID}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(launchedEnv, "\n")
+	if strings.Contains(joined, "ambient-secret") || !strings.Contains(joined, "ORBITAL_SESSION="+session.ID) {
+		t.Fatalf("external provider boundary was not applied: %s", joined)
+	}
+	if configured.Provider != provider.Provider || configured.Release != provider.Release || configured.ManifestDigest != provider.ManifestDigest || configured.SessionID != session.ID {
+		t.Fatalf("renderer coordinates drifted: %#v", configured)
+	}
+	if len(control.stopped) != 1 || control.stopped[0] != session.ID {
+		t.Fatalf("external provider session was not stopped: %v", control.stopped)
+	}
+}
+
 func TestRunCancelsTheNativeAgentAfterRemoteStop(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
@@ -871,6 +977,89 @@ func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
 				t.Fatalf("invalid provider material reached credential_process stdout: %q", rejected.String())
 			}
 		})
+	}
+}
+
+func TestCredentialLeaseRendersAdmittedExternalMaterialAndRejectsIdentityDrift(t *testing.T) {
+	now := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	control := enrolledStub()
+	seedEnrollment(t, root, control)
+	artifact := []byte("admitted-renderer")
+	artifactDigest := sha256.Sum256(artifact)
+	provider := controlclient.CredentialProvider{
+		Release: "unfamiliar-edge.session@9.1.4", Provider: "unfamiliar-edge", CredentialKind: "edge.ephemeral.v4",
+		MaximumTTLSeconds: 180, RevocationSemantics: "renewal-stops-token-expires",
+		ManifestDigest: "sha256:" + strings.Repeat("b", 64), PublisherID: "external-fixture",
+		RendererProtocol: provideradapter.RendererProtocol, RendererExecutable: "edge-renderer",
+		RendererArtifacts:    []controlclient.RendererArtifact{{OS: runtime.GOOS, Arch: runtime.GOARCH, Digest: "sha256:" + fmt.Sprintf("%x", artifactDigest)}},
+		SensitiveEnvironment: []string{"EDGE_TOKEN"}, AdmissionRequired: true,
+	}
+	rendererDigest := provider.RendererArtifacts[0].Digest
+	control.credentialProviders = []controlclient.CredentialProvider{provider}
+	active := localstate.ActiveSession{
+		Profile: domain.SessionProfile{
+			ID: "profile-edge", TenantID: "tenant-1", Name: "Edge production", Agent: domain.AgentCodex,
+			Workspace: "/workspace", Scope: domain.Scope{Provider: provider.Provider, AccountRef: "fabric-42", Environments: []string{"production"}},
+			Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
+			CredentialBinding: &domain.CredentialBinding{ConnectionID: "connection-edge", ProviderRelease: provider.Release},
+			AdapterRelease:    "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+		},
+		Session: domain.AgentSession{ID: "session-edge", TenantID: "tenant-1", ProfileID: "profile-edge", ProfileDigest: "sha256:profile", ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now},
+	}
+	store := localstate.Store{Root: root, FileTokens: true}
+	activePath, err := store.SaveActive(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendererPath, err := store.SaveRuntimeExecutable(active.Session.ID, "renderer-edge", artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.credentialMaterial = controlclient.CredentialMaterial{
+		Kind: provider.CredentialKind, Payload: json.RawMessage(`{"opaque":"never-print-this"}`), ExpiresAt: now.Add(2 * time.Minute),
+		TargetIdentity: "unfamiliar-edge://fabric-42", RevocationSemantics: provider.RevocationSemantics,
+	}
+	var rendered provideradapter.RenderRequest
+	var output bytes.Buffer
+	app := &App{
+		Out: &output, Err: io.Discard, StateRoot: root, FileTokens: true, Now: func() time.Time { return now },
+		NewControl: func(_, _, _ string) Control { return control },
+		RunRenderer: func(_ context.Context, path, operation string, input []byte) ([]byte, error) {
+			if path != rendererPath || operation != "render" {
+				t.Fatalf("unexpected renderer invocation: %q %q", path, operation)
+			}
+			if err := json.Unmarshal(input, &rendered); err != nil {
+				t.Fatal(err)
+			}
+			return json.Marshal(provideradapter.RenderedMaterial{Stdout: `{"Version":4,"Access":"native-edge-token"}`})
+		},
+	}
+	args := []string{"credential", "lease", "--active", activePath, "--kind", provider.CredentialKind, "--release", provider.Release, "--manifest-digest", provider.ManifestDigest, "--renderer", rendererPath, "--renderer-digest", rendererDigest}
+	if err := app.Run(context.Background(), args); err != nil {
+		t.Fatal(err)
+	}
+	wantOutput := `{"Version":4,"Access":"native-edge-token"}`
+	if output.String() != wantOutput {
+		t.Fatalf("external renderer output changed: got %q want %q", output.String(), wantOutput)
+	}
+	if strings.Contains(output.String(), "never-print-this") {
+		t.Fatalf("opaque material escaped or native material missing: %q", output.String())
+	}
+	if rendered.Release != provider.Release || rendered.ManifestDigest != provider.ManifestDigest || rendered.SessionID != active.Session.ID || !strings.Contains(string(rendered.Material), "never-print-this") {
+		t.Fatalf("render request was not bound to the admitted identity: %#v", rendered)
+	}
+
+	control.credentialSessionID = ""
+	badArgs := append([]string(nil), args...)
+	badArgs[9] = "sha256:" + strings.Repeat("c", 64)
+	var rejected bytes.Buffer
+	app.Out = &rejected
+	if err := app.Run(context.Background(), badArgs); err == nil {
+		t.Fatal("manifest identity drift was accepted")
+	}
+	if control.credentialSessionID != "" || rejected.Len() != 0 {
+		t.Fatalf("credential was issued before identity rejection: session=%q output=%q", control.credentialSessionID, rejected.String())
 	}
 }
 

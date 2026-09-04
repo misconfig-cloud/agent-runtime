@@ -67,6 +67,7 @@ type App struct {
 	LookPath        func(string) (string, error)
 	NewControl      func(string, string, string) Control
 	RunCommand      CommandRunner
+	RunRenderer     credentialruntime.RendererRunner
 	Now             func() time.Time
 	UserHomeDir     func() (string, error)
 	CurrentDir      func() (string, error)
@@ -684,7 +685,15 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 		if providerErr != nil {
 			return a.stopAfterStart(control, session.ID, "credential provider binding unavailable", providerErr)
 		}
-		registry, registryErr := credentialruntime.NewRegistry(a.CredentialAdapters...)
+		adapters := append([]credentialruntime.Adapter(nil), a.CredentialAdapters...)
+		if provider.AdmissionRequired {
+			rendererPath, stageErr := credentialruntime.StageExternalRenderer(provider, a.LookPath, store, session.ID)
+			if stageErr != nil {
+				return a.stopAfterStart(control, session.ID, "credential renderer verification failed", stageErr)
+			}
+			adapters = append(adapters, credentialruntime.External{Provider: provider, RendererPath: rendererPath, RunRenderer: a.RunRenderer})
+		}
+		registry, registryErr := credentialruntime.NewRegistry(adapters...)
 		if registryErr != nil {
 			return a.stopAfterStart(control, session.ID, "credential runtime registry failed", registryErr)
 		}

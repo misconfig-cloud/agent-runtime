@@ -64,12 +64,25 @@ type CreateProfileRequest struct {
 }
 
 type CredentialProvider struct {
-	Release             string `json:"release"`
-	Provider            string `json:"provider"`
-	CredentialKind      string `json:"credential_kind"`
-	MaximumTTLSeconds   int64  `json:"maximum_ttl_seconds"`
-	ConfigurationSchema string `json:"configuration_schema"`
-	RevocationSemantics string `json:"revocation_semantics"`
+	Release              string             `json:"release"`
+	Provider             string             `json:"provider"`
+	CredentialKind       string             `json:"credential_kind"`
+	MaximumTTLSeconds    int64              `json:"maximum_ttl_seconds"`
+	ConfigurationSchema  string             `json:"configuration_schema"`
+	RevocationSemantics  string             `json:"revocation_semantics"`
+	ManifestDigest       string             `json:"manifest_digest,omitempty"`
+	PublisherID          string             `json:"publisher_id,omitempty"`
+	RendererProtocol     string             `json:"renderer_protocol,omitempty"`
+	RendererExecutable   string             `json:"renderer_executable,omitempty"`
+	RendererArtifacts    []RendererArtifact `json:"renderer_artifacts,omitempty"`
+	SensitiveEnvironment []string           `json:"sensitive_environment,omitempty"`
+	AdmissionRequired    bool               `json:"admission_required"`
+}
+
+type RendererArtifact struct {
+	OS     string `json:"os"`
+	Arch   string `json:"arch"`
+	Digest string `json:"digest"`
 }
 
 type CredentialConnection struct {

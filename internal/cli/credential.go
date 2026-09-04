@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
+	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
 )
@@ -175,6 +176,10 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	flags := a.flags("credential lease")
 	activePath := flags.String("active", "", "active session path")
 	kind := flags.String("kind", "", "expected credential material kind")
+	release := flags.String("release", "", "expected admitted provider release")
+	manifestDigest := flags.String("manifest-digest", "", "expected signed provider manifest digest")
+	rendererPath := flags.String("renderer", "", "staged credential renderer path")
+	rendererDigest := flags.String("renderer-digest", "", "expected staged renderer digest")
 	if err := flags.Parse(args); err != nil || flags.NArg() != 0 {
 		if err == nil {
 			err = errors.New("credential lease does not accept positional arguments")
@@ -209,6 +214,21 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	if provider.CredentialKind != *kind {
 		return errors.New("credential material kind does not match the immutable provider release")
 	}
+	if provider.AdmissionRequired {
+		expectedRendererDigest, digestErr := credentialruntime.RendererDigestForCurrentPlatform(provider)
+		if digestErr != nil {
+			return digestErr
+		}
+		if provider.Release != strings.TrimSpace(*release) || provider.ManifestDigest != strings.TrimSpace(*manifestDigest) ||
+			expectedRendererDigest != strings.TrimSpace(*rendererDigest) || strings.TrimSpace(*rendererPath) == "" {
+			return errors.New("external credential renderer identity does not match the admitted provider release")
+		}
+		if err := credentialruntime.VerifyExternalRenderer(strings.TrimSpace(*rendererPath), expectedRendererDigest); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(*release) != "" || strings.TrimSpace(*manifestDigest) != "" || strings.TrimSpace(*rendererPath) != "" || strings.TrimSpace(*rendererDigest) != "" {
+		return errors.New("renderer arguments are not valid for a compiled credential provider")
+	}
 	requestID, err := domain.NewID("lease")
 	if err != nil {
 		return err
@@ -225,9 +245,20 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 		len(material.Payload) == 0 || !json.Valid(material.Payload) {
 		return errors.New("control plane returned invalid credential material")
 	}
-	if _, err := a.Out.Write(material.Payload); err != nil {
+	output := []byte(material.Payload)
+	appendNewline := true
+	if provider.AdmissionRequired {
+		output, err = credentialruntime.RenderExternalMaterial(ctx, a.RunRenderer, provider, strings.TrimSpace(*rendererPath), active.Session.ID, strings.TrimSpace(*activePath), material.Payload)
+		if err != nil {
+			return err
+		}
+		appendNewline = false
+	}
+	if _, err := a.Out.Write(output); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(a.Out)
+	if appendNewline {
+		_, err = fmt.Fprintln(a.Out)
+	}
 	return err
 }
