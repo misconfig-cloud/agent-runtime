@@ -24,6 +24,9 @@ type Input struct {
 	ToolInput      map[string]any `json:"tool_input"`
 	ToolResponse   any            `json:"tool_response,omitempty"`
 	ToolUseID      string         `json:"tool_use_id"`
+	Error          string         `json:"error,omitempty"`
+	IsInterrupt    bool           `json:"is_interrupt,omitempty"`
+	DurationMS     int64          `json:"duration_ms,omitempty"`
 	CWD            string         `json:"cwd"`
 }
 

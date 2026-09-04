@@ -1,0 +1,22 @@
+[
+  {
+    "id": "allow-one-governed-subagent",
+    "effect": "allow",
+    "providers": ["aws"],
+    "operations": [
+      "tool.CollaborationspawnAgent",
+      "tool.CollaborationwaitAgent",
+      "tool.CollaborationlistAgents"
+    ],
+    "resource_prefixes": ["arn:aws:"],
+    "reason": "allow governed delegation inside this session; child tools remain subject to the same policy"
+  },
+  {
+    "id": "allow-aws-inventory-read",
+    "effect": "allow",
+    "providers": ["aws"],
+    "operations": ["aws.sts.GetCallerIdentity", "aws.ec2.DescribeInstances"],
+    "resource_prefixes": ["arn:aws:"],
+    "reason": "approved read-only acceptance scope"
+  }
+]

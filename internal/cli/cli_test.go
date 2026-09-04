@@ -237,7 +237,8 @@ func TestNativeLaunchConfigurationIsSessionScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(encoded, []byte(`"PreToolUse"`)) || !bytes.Contains(encoded, []byte(`"PostToolUse"`)) || !bytes.Contains(encoded, []byte("--agent claude")) {
+	if !bytes.Contains(encoded, []byte(`"PreToolUse"`)) || !bytes.Contains(encoded, []byte(`"PostToolUse"`)) ||
+		!bytes.Contains(encoded, []byte(`"PostToolUseFailure"`)) || bytes.Count(encoded, []byte("post --agent claude")) != 2 {
 		t.Fatalf("Claude settings omitted hooks: %s", encoded)
 	}
 }
@@ -261,7 +262,7 @@ func TestCreateProfileUsesSafeApprovalDefault(t *testing.T) {
 func TestRunLaunchesNativeAgentWithVerifiedPolicyAndStopsSession(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +328,7 @@ func TestRunLaunchesNativeAgentWithVerifiedPolicyAndStopsSession(t *testing.T) {
 func TestRunCancelsTheNativeAgentAfterRemoteStop(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

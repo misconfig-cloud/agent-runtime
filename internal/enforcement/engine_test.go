@@ -172,6 +172,36 @@ func TestPostDoesNotClaimSuccessForOpaqueCodexResponse(t *testing.T) {
 	}
 }
 
+func TestClaudePostToolUseFailureProducesFailedReceipt(t *testing.T) {
+	engine, control, activePath, _ := fixture(t, policy.EffectAllow)
+	input := hook.Input{
+		SessionID: "native-session", HookEventName: "PreToolUse", ToolName: "Bash", ToolUseID: "claude-failure",
+		ToolInput: map[string]any{"command": "aws ec2 describe-instances --region eu-central-1"},
+	}
+	if _, err := engine.Pre(context.Background(), activePath, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Replay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	input.HookEventName = "PostToolUseFailure"
+	input.Error = "Exit code 1\nprovider output that must not be stored"
+	input.DurationMS = 4187
+	if err := engine.Post(context.Background(), activePath, input); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Replay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(control.receipts) != 2 || control.receipts[1].Outcome != spool.OutcomeFailed {
+		t.Fatalf("Claude failure was not recorded: %#v", control.receipts)
+	}
+	if control.receipts[1].ProviderReceipt != "" {
+		t.Fatal("raw Claude failure text must not be retained as a provider receipt")
+	}
+}
+
 func TestEvaluationUsesOnlyVerifiedUnexpiredCache(t *testing.T) {
 	engine, control, activePath, now := fixture(t, policy.EffectAllow)
 	control.sessionErr = errors.New("offline")

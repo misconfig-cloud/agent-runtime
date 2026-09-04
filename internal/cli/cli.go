@@ -627,8 +627,9 @@ func (a *App) nativeCommand(store localstate.Store, executable, sessionID string
 		return "codex", args, nil
 	case domain.AgentClaude:
 		settings := map[string]any{"hooks": map[string]any{
-			"PreToolUse":  []any{nativeMatcher(hookCommand+" pre --agent claude", "Misconfig is checking policy")},
-			"PostToolUse": []any{nativeMatcher(hookCommand+" post --agent claude", "Misconfig is recording proof")},
+			"PreToolUse":         []any{nativeMatcher(hookCommand+" pre --agent claude", "Misconfig is checking policy")},
+			"PostToolUse":        []any{nativeMatcher(hookCommand+" post --agent claude", "Misconfig is recording proof")},
+			"PostToolUseFailure": []any{nativeMatcher(hookCommand+" post --agent claude", "Misconfig is recording failure")},
 		}}
 		path, err := store.SaveRuntimeConfig(sessionID, "claude-settings.json", settings)
 		if err != nil {

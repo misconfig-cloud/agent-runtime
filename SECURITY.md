@@ -16,6 +16,10 @@ Report vulnerabilities privately to contact@misconfig.cloud.
 - Codex Bash output in the currently supported native hook version has no
   trustworthy exit code. It is retained as observed activity, never invented
   as verified success.
+- Release archives contain no enrollment token or customer credential. The
+  release manifest pins source identity, platform, byte size, and SHA-256 for
+  every artifact. `checksums.txt` is ready for detached signing; it is not a
+  signature by itself.
 
 ## What this release does not claim
 

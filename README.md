@@ -22,6 +22,38 @@ misconfig version
 `misconfig hook` is an internal native-adapter entry point. Do not invoke it
 manually.
 
+## Install a release
+
+Release archives are self-contained. Installing one does not require Go, Git,
+or a source checkout. Select the archive matching macOS or Linux and the
+machine architecture, verify it against `checksums.txt`, then extract it:
+
+```sh
+sha256sum -c checksums.txt
+tar -xzf misconfig_VERSION_OS_ARCH.tar.gz
+sudo ./install.sh
+```
+
+macOS provides `shasum -a 256 -c checksums.txt` in place of `sha256sum`.
+`checksums.txt` covers every archive and the exact `manifest.json`; it is the
+subject intended for release signing. Until detached signatures are published,
+obtain it through the same trusted release channel as the archive.
+
+Enroll without putting the short-lived token in shell history or the process
+argument list:
+
+```sh
+printf '%s' "$MISCONFIG_ENROLLMENT_TOKEN" | misconfig setup \
+  --control https://sessions.misconfig.cloud \
+  --tenant TENANT \
+  --actor EMAIL \
+  --token-file -
+unset MISCONFIG_ENROLLMENT_TOKEN
+```
+
+The extracted `uninstall.sh --yes` removes runtime state and the installed
+binary. Pass `--keep-state` only when intentionally preserving local state.
+
 ## Build the current development runtime
 
 Go 1.25 or newer is required by the current module.
@@ -31,7 +63,16 @@ go test -race ./...
 go build -o ./bin/misconfig ./cmd/misconfig
 ```
 
-Public signed installers are not released yet.
+Maintainers can build the versioned macOS/Linux matrix reproducibly:
+
+```sh
+make release RELEASE_VERSION=0.1.0
+make verify-release
+```
+
+The release command embeds the explicit version, strips host paths and build
+IDs, fixes archive metadata to `SOURCE_DATE_EPOCH`, and emits `manifest.json`
+plus `checksums.txt`. It refuses to overwrite an existing release by default.
 
 ## Enrol one device
 
