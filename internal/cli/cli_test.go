@@ -458,6 +458,24 @@ func TestStatusAndUninstallAreLimitedToThisDevice(t *testing.T) {
 	}
 }
 
+func TestUninstallWithoutEnrollmentIsIdempotent(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not-created")
+	var out bytes.Buffer
+	app := &App{Out: &out, Err: io.Discard, StateRoot: root, FileTokens: true}
+	if err := app.Run(context.Background(), []string{"uninstall", "--yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "No enrollment found") {
+		t.Fatalf("unenrolled removal was not explained: %s", out.String())
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unenrolled state root exists after uninstall: %v", err)
+	}
+	if err := app.Run(context.Background(), []string{"uninstall", "--yes"}); err != nil {
+		t.Fatalf("repeated uninstall failed: %v", err)
+	}
+}
+
 func TestSyncReplaysDurableReceiptsWithoutStartingAnAgent(t *testing.T) {
 	root := t.TempDir()
 	control := enrolledStub()

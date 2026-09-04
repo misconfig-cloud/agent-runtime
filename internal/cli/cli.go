@@ -782,10 +782,26 @@ func (a *App) uninstall(ctx context.Context, args []string) error {
 	if !*yes {
 		return exitError{code: 2, err: errors.New("uninstall requires --yes")}
 	}
-	store, config, control, err := a.authenticated()
+	store, err := a.store()
 	if err != nil {
 		return err
 	}
+	config, err := store.LoadConfig()
+	if errors.Is(err, os.ErrNotExist) {
+		if err := store.Remove(); err != nil {
+			return fmt.Errorf("remove unenrolled local runtime state: %w", err)
+		}
+		fmt.Fprintln(a.Out, "No enrollment found. Misconfig local runtime state removed.")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load enrollment before uninstall: %w", err)
+	}
+	token, err := store.DeviceToken(config.DeviceID)
+	if err != nil {
+		return fmt.Errorf("load device credential before uninstall: %w", err)
+	}
+	control := a.NewControl(config.ControlURL, config.TenantID, token)
 	sessions, err := control.Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("list sessions before uninstall: %w", err)
