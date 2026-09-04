@@ -218,7 +218,22 @@ and deletes its local Misconfig state. Hosted session receipts remain retained.
 
 ## Current enforcement boundary
 
+Session profiles, signed policies, action envelopes, receipts, and credential
+connection APIs treat provider identifiers as opaque values. The official
+runtime currently registers the AWS credential-process adapter as a compiled
+adapter; it is not part of policy evaluation or session identity.
+
+An unfamiliar provider can use attach-mode governance without a runtime
+adapter. Brokered credentials additionally require a trusted adapter compiled
+and registered in the runtime binary so provider material can be isolated and
+presented in its native format. This release intentionally does not load
+adapter executables from disk. Independently installed adapters require a
+future authenticated subprocess protocol with pinned binary identity, an
+environment allowlist, typed material schemas, and explicit secret-output
+rules; until that contract exists, an unknown adapter fails closed.
+
 Attach mode is a bypassable local guardrail. A process or user holding the same
 AWS or Kubernetes credential outside the governed agent can still act directly.
-Credential-brokered and typed execution are separate future enforcement levels;
-the console must not label this release as either one.
+The verified AWS credential-process adapter supports brokered sessions for its
+exact provider release. Typed execution remains a separate enforcement level,
+and attach-mode profiles must not be presented as credential-brokered.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
+	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
@@ -36,6 +37,15 @@ type stubControl struct {
 	successorIn            controlclient.CreateProfileSuccessorRequest
 	stopped                []string
 	receipts               []spool.Receipt
+	credentialProviders    []controlclient.CredentialProvider
+	credentialConnections  []controlclient.CredentialConnection
+	preparedConnection     controlclient.PreparedCredentialConnection
+	connectionRequest      controlclient.CreateCredentialConnectionRequest
+	verifiedConnectionID   string
+	revokedConnectionID    string
+	credentialMaterial     controlclient.CredentialMaterial
+	credentialSessionID    string
+	credentialRequestID    string
 	authorizationStart     controlclient.DeviceAuthorizationStart
 	authorizationExchanges []controlclient.DeviceAuthorizationExchange
 	authorizationPolls     int
@@ -72,6 +82,38 @@ func (s *stubControl) CreateProfileSuccessor(_ context.Context, profileID string
 }
 func (s *stubControl) Profiles(context.Context) ([]domain.SessionProfile, error) {
 	return s.profiles, nil
+}
+func (s *stubControl) CredentialProviders(context.Context) ([]controlclient.CredentialProvider, error) {
+	return s.credentialProviders, nil
+}
+func (s *stubControl) CreateCredentialConnection(_ context.Context, request controlclient.CreateCredentialConnectionRequest) (controlclient.PreparedCredentialConnection, error) {
+	s.connectionRequest = request
+	return s.preparedConnection, nil
+}
+func (s *stubControl) CredentialConnections(context.Context) ([]controlclient.CredentialConnection, error) {
+	return s.credentialConnections, nil
+}
+func (s *stubControl) VerifyCredentialConnection(_ context.Context, connectionID string) (controlclient.CredentialConnection, error) {
+	s.verifiedConnectionID = connectionID
+	for _, connection := range s.credentialConnections {
+		if connection.ID == connectionID {
+			connection.State = "verified"
+			return connection, nil
+		}
+	}
+	return controlclient.CredentialConnection{}, errors.New("not implemented in stub")
+}
+func (s *stubControl) RevokeCredentialConnection(_ context.Context, connectionID string) error {
+	s.revokedConnectionID = connectionID
+	return nil
+}
+func (s *stubControl) CredentialLease(_ context.Context, sessionID, requestID string) (controlclient.CredentialMaterial, error) {
+	s.credentialSessionID = sessionID
+	s.credentialRequestID = requestID
+	if s.credentialMaterial.Kind == "" {
+		return controlclient.CredentialMaterial{}, errors.New("not implemented in stub")
+	}
+	return s.credentialMaterial, nil
 }
 func (s *stubControl) StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error) {
 	if s.started.ID == "" {
@@ -449,6 +491,98 @@ func TestRunLaunchesNativeAgentWithVerifiedPolicyAndStopsSession(t *testing.T) {
 	}
 }
 
+type orbitalCredentialAdapter struct{}
+
+func (orbitalCredentialAdapter) CredentialKind() string { return "orbital.exec-token.v9" }
+func (orbitalCredentialAdapter) SensitiveEnvironment() []string {
+	return []string{"ORBITAL_TOKEN", "ORBITAL_PROFILE"}
+}
+func (orbitalCredentialAdapter) Configure(request credentialruntime.ConfigureRequest) ([]string, error) {
+	if request.Provider.Provider != "orbital-fabric" || request.Profile.Scope.Provider != "orbital-fabric" {
+		return nil, errors.New("orbital adapter received the wrong provider")
+	}
+	return credentialruntime.SetEnvironment(request.BaseEnv, map[string]string{
+		"ORBITAL_SESSION": request.Session.ID,
+	}), nil
+}
+
+func TestRunSupportsACompiledUnfamiliarCredentialAdapter(t *testing.T) {
+	t.Setenv("ORBITAL_TOKEN", "ambient-secret")
+	root := t.TempDir()
+	workspace := t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SessionProfile{
+		ID: "profile-orbital", TenantID: "tenant-1", Name: "Orbital production", Agent: domain.AgentCodex,
+		Workspace: workspace,
+		Scope: domain.Scope{
+			Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
+			ResourcePrefixes: []string{"orbital://station-9/"},
+		},
+		Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
+		CredentialBinding: &domain.CredentialBinding{
+			ConnectionID: "connection-orbital", ProviderRelease: "orbital.session@3.7.1",
+		},
+		AdapterRelease: "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+	}
+	digest, err := domain.Digest(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.AgentSession{
+		ID: "session-orbital", TenantID: "tenant-1", ProfileID: profile.ID, ProfileDigest: digest,
+		ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
+	}
+	signed, err := policy.Sign(policy.Bundle{
+		Release: "policy@1", TenantID: "tenant-1", ProfileID: profile.ID,
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		Rules: []policy.Rule{{
+			ID: "allow-orbital-read", Effect: policy.EffectAllow, Providers: []string{"orbital-fabric"},
+			Operations: []string{"tool.OrbitalRead"}, ResourcePrefixes: []string{"orbital://station-9/"}, Reason: "bounded read",
+		}},
+	}, "key-1", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := enrolledStub()
+	control.profiles = []domain.SessionProfile{profile}
+	control.started = session
+	control.signed = signed
+	control.credentialProviders = []controlclient.CredentialProvider{{
+		Release: "orbital.session@3.7.1", Provider: "orbital-fabric", CredentialKind: "orbital.exec-token.v9",
+		MaximumTTLSeconds: 300, RevocationSemantics: "renewal-stops-token-expires",
+	}}
+	seedEnrollmentWithKey(t, root, control, base64.RawURLEncoding.EncodeToString(publicKey))
+
+	var launchedEnv []string
+	app := &App{
+		In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, StateRoot: root, FileTokens: true,
+		Now: func() time.Time { return now }, NewControl: func(_, _, _ string) Control { return control },
+		LookPath:   func(name string) (string, error) { return "/usr/bin/" + name, nil },
+		Executable: func() (string, error) { return "/opt/misconfig", nil },
+		CredentialAdapters: []credentialruntime.Adapter{
+			credentialruntime.AWS{}, orbitalCredentialAdapter{},
+		},
+		RunCommand: func(_ context.Context, _ string, _ []string, _ string, environment []string, _ io.Reader, _, _ io.Writer) error {
+			launchedEnv = append([]string{}, environment...)
+			return nil
+		},
+	}
+	if err := app.Run(context.Background(), []string{"run", "--profile", profile.ID}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(launchedEnv, "\n")
+	if strings.Contains(joined, "ambient-secret") || !strings.Contains(joined, "ORBITAL_SESSION="+session.ID) {
+		t.Fatalf("unfamiliar provider runtime boundary was not applied: %s", joined)
+	}
+	if len(control.stopped) != 1 || control.stopped[0] != session.ID {
+		t.Fatalf("unfamiliar provider session was not stopped: %v", control.stopped)
+	}
+}
+
 func TestRunCancelsTheNativeAgentAfterRemoteStop(t *testing.T) {
 	root := t.TempDir()
 	workspace := t.TempDir()
@@ -599,6 +733,144 @@ func TestSyncReplaysDurableReceiptsWithoutStartingAnAgent(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "1 pending receipt(s) synchronized") {
 		t.Fatalf("sync result was not explained: %s", out.String())
+	}
+}
+
+func TestCredentialCommandsDiscoverAndManageProviderNeutralConnections(t *testing.T) {
+	root := t.TempDir()
+	control := enrolledStub()
+	seedEnrollment(t, root, control)
+	control.credentialProviders = []controlclient.CredentialProvider{{
+		Release: "orbital.session@3.7.1", Provider: "orbital-fabric", CredentialKind: "orbital.exec-token.v9",
+	}}
+	control.credentialConnections = []controlclient.CredentialConnection{{
+		ID: "connection-a", TenantID: "tenant-1", Provider: "orbital-fabric", AccountRef: "station-9",
+		ProviderRelease: "orbital.session@3.7.1", Name: "Station", State: "pending",
+	}}
+	control.preparedConnection = controlclient.PreparedCredentialConnection{
+		Connection: control.credentialConnections[0],
+		Onboarding: json.RawMessage(`{"kind":"orbital_station","instruction":"configure the edge"}`),
+	}
+	newApp := func(in io.Reader, out io.Writer) *App {
+		return &App{In: in, Out: out, Err: io.Discard, StateRoot: root, FileTokens: true, NewControl: func(_, _, _ string) Control { return control }}
+	}
+
+	var output bytes.Buffer
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"credential", "providers"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "orbital.exec-token.v9") {
+		t.Fatalf("provider discovery output = %s", output.String())
+	}
+
+	output.Reset()
+	input := `{"audience":"edge"}`
+	if err := newApp(strings.NewReader(input), &output).Run(context.Background(), []string{
+		"credential", "connection", "create", "--provider", "orbital-fabric",
+		"--release", "orbital.session@3.7.1", "--account", "station-9", "--name", "Station", "--input-file", "-",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if control.connectionRequest.Provider != "orbital-fabric" || control.connectionRequest.AccountRef != "station-9" || string(control.connectionRequest.Input) != input {
+		t.Fatalf("provider-neutral connection request changed: %#v", control.connectionRequest)
+	}
+	if !strings.Contains(output.String(), "configure the edge") {
+		t.Fatalf("onboarding was not returned: %s", output.String())
+	}
+
+	output.Reset()
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"credential", "connection", "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "connection-a") {
+		t.Fatalf("connection list output = %s", output.String())
+	}
+
+	output.Reset()
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"credential", "connection", "verify", "--id", "connection-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if control.verifiedConnectionID != "connection-a" || !strings.Contains(output.String(), "verified") {
+		t.Fatalf("connection verification = %q output=%s", control.verifiedConnectionID, output.String())
+	}
+
+	output.Reset()
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"credential", "connection", "revoke", "--id", "connection-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if control.revokedConnectionID != "connection-a" || !strings.Contains(output.String(), "New leases are blocked") {
+		t.Fatalf("connection revoke = %q output=%s", control.revokedConnectionID, output.String())
+	}
+}
+
+func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
+	now := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	control := enrolledStub()
+	seedEnrollment(t, root, control)
+	control.credentialProviders = []controlclient.CredentialProvider{{
+		Release: "orbital.session@3.7.1", Provider: "orbital-fabric", CredentialKind: "orbital.exec-token.v9",
+		MaximumTTLSeconds: 300, RevocationSemantics: "renewal-stops-token-expires",
+	}}
+	active := localstate.ActiveSession{
+		Profile: domain.SessionProfile{
+			ID: "profile-a", TenantID: "tenant-1", Name: "Orbital production", Agent: domain.AgentCodex,
+			Workspace: "/workspace", Scope: domain.Scope{Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"}},
+			Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
+			CredentialBinding: &domain.CredentialBinding{ConnectionID: "connection-a", ProviderRelease: "orbital.session@3.7.1"},
+			AdapterRelease:    "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+		},
+		Session: domain.AgentSession{
+			ID: "session-a", TenantID: "tenant-1", ProfileID: "profile-a", ProfileDigest: "sha256:profile",
+			ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
+		},
+	}
+	activePath, err := (localstate.Store{Root: root, FileTokens: true}).SaveActive(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := controlclient.CredentialMaterial{
+		Kind: "orbital.exec-token.v9", Payload: json.RawMessage(`{"token":"opaque-provider-material"}`),
+		ExpiresAt: now.Add(4 * time.Minute), TargetIdentity: "orbital://station-9",
+		RevocationSemantics: "renewal-stops-token-expires",
+	}
+	control.credentialMaterial = valid
+	var output bytes.Buffer
+	app := &App{Out: &output, Err: io.Discard, StateRoot: root, FileTokens: true, Now: func() time.Time { return now }, NewControl: func(_, _, _ string) Control { return control }}
+	if err := app.Run(context.Background(), []string{"credential", "lease", "--active", activePath, "--kind", valid.Kind}); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != string(valid.Payload)+"\n" {
+		t.Fatalf("credential_process output was changed: %q", output.String())
+	}
+	if control.credentialSessionID != "session-a" || !strings.HasPrefix(control.credentialRequestID, "lease_") {
+		t.Fatalf("lease identity was not session-bound: session=%q request=%q", control.credentialSessionID, control.credentialRequestID)
+	}
+
+	invalid := []struct {
+		name   string
+		mutate func(*controlclient.CredentialMaterial)
+	}{
+		{name: "wrong kind", mutate: func(material *controlclient.CredentialMaterial) { material.Kind = "other" }},
+		{name: "expired", mutate: func(material *controlclient.CredentialMaterial) { material.ExpiresAt = now.Add(-time.Second) }},
+		{name: "ttl widened", mutate: func(material *controlclient.CredentialMaterial) { material.ExpiresAt = now.Add(10 * time.Minute) }},
+		{name: "revocation drift", mutate: func(material *controlclient.CredentialMaterial) { material.RevocationSemantics = "never" }},
+		{name: "missing target", mutate: func(material *controlclient.CredentialMaterial) { material.TargetIdentity = "" }},
+	}
+	for _, test := range invalid {
+		t.Run(test.name, func(t *testing.T) {
+			material := valid
+			test.mutate(&material)
+			control.credentialMaterial = material
+			var rejected bytes.Buffer
+			app := &App{Out: &rejected, Err: io.Discard, StateRoot: root, FileTokens: true, Now: func() time.Time { return now }, NewControl: func(_, _, _ string) Control { return control }}
+			if err := app.Run(context.Background(), []string{"credential", "lease", "--active", activePath, "--kind", valid.Kind}); err == nil {
+				t.Fatal("invalid provider material was accepted")
+			}
+			if rejected.Len() != 0 {
+				t.Fatalf("invalid provider material reached credential_process stdout: %q", rejected.String())
+			}
+		})
 	}
 }
 

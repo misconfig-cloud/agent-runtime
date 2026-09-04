@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
+	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
 	"github.com/misconfig-cloud/agent-runtime/internal/discovery"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/enforcement"
@@ -38,6 +39,12 @@ type Control interface {
 	CreateProfile(context.Context, controlclient.CreateProfileRequest) (domain.SessionProfile, string, error)
 	CreateProfileSuccessor(context.Context, string, controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error)
 	Profiles(context.Context) ([]domain.SessionProfile, error)
+	CredentialProviders(context.Context) ([]controlclient.CredentialProvider, error)
+	CreateCredentialConnection(context.Context, controlclient.CreateCredentialConnectionRequest) (controlclient.PreparedCredentialConnection, error)
+	CredentialConnections(context.Context) ([]controlclient.CredentialConnection, error)
+	VerifyCredentialConnection(context.Context, string) (controlclient.CredentialConnection, error)
+	RevokeCredentialConnection(context.Context, string) error
+	CredentialLease(context.Context, string, string) (controlclient.CredentialMaterial, error)
 	StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error)
 	Session(context.Context, string) (domain.AgentSession, error)
 	Sessions(context.Context) ([]domain.AgentSession, error)
@@ -66,6 +73,9 @@ type App struct {
 	Hostname        func() (string, error)
 	OpenURL         func(string) error
 	RefreshInterval time.Duration
+	// CredentialAdapters are trusted, compiled runtime adapters. The core does
+	// not discover or execute provider plugins from the filesystem.
+	CredentialAdapters []credentialruntime.Adapter
 }
 
 type exitError struct {
@@ -106,6 +116,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.profile(ctx, args[1:])
 	case "run":
 		return a.runSession(ctx, args[1:])
+	case "credential":
+		return a.credential(ctx, args[1:])
 	case "status":
 		return a.status(ctx, args[1:])
 	case "sync":
@@ -462,6 +474,8 @@ func (a *App) createProfile(ctx context.Context, args []string) error {
 	account := flags.String("account", "", "provider account or cluster")
 	enforcementLevel := flags.String("enforcement", string(domain.EnforcementHook), "enforcement level")
 	credentialMode := flags.String("credential-mode", string(domain.CredentialAttach), "credential mode")
+	credentialConnection := flags.String("credential-connection", "", "verified credential connection ID")
+	credentialProviderRelease := flags.String("credential-provider-release", "", "immutable credential provider release")
 	rulesPath := flags.String("rules", "", "JSON policy rules")
 	ttl := flags.Int64("policy-ttl", 300, "signed policy TTL in seconds")
 	var environments stringsFlag
@@ -510,10 +524,20 @@ func (a *App) createProfile(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var credentialBinding *domain.CredentialBinding
+	if domain.CredentialMode(*credentialMode) == domain.CredentialBrokered {
+		credentialBinding = &domain.CredentialBinding{ConnectionID: strings.TrimSpace(*credentialConnection), ProviderRelease: strings.TrimSpace(*credentialProviderRelease)}
+		if err := credentialBinding.Validate(); err != nil {
+			return exitError{code: 2, err: fmt.Errorf("invalid credential binding: %w", err)}
+		}
+	} else if strings.TrimSpace(*credentialConnection) != "" || strings.TrimSpace(*credentialProviderRelease) != "" {
+		return exitError{code: 2, err: errors.New("credential connection flags require --credential-mode brokered")}
+	}
 	profile, digest, err := control.CreateProfile(ctx, controlclient.CreateProfileRequest{
 		Name: *name, Agent: *agent, Workspace: absoluteWorkspace, Scope: scope,
 		Enforcement: domain.EnforcementLevel(*enforcementLevel), CredentialMode: domain.CredentialMode(*credentialMode),
-		AdapterRelease: string(agentKind) + "@" + a.Version, Rules: rules, PolicyTTLSeconds: *ttl,
+		CredentialBinding: credentialBinding,
+		AdapterRelease:    string(agentKind) + "@" + a.Version, Rules: rules, PolicyTTLSeconds: *ttl,
 	})
 	if err != nil {
 		return fmt.Errorf("create profile: %w", err)
@@ -651,6 +675,27 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 		return a.stopAfterStart(control, session.ID, "native adapter initialization failed", err)
 	}
 	environment := append(os.Environ(), "MISCONFIG_ACTIVE_SESSION="+activePath, "MISCONFIG_HOME="+store.Root)
+	if profile.CredentialMode == domain.CredentialBrokered {
+		providers, providerErr := control.CredentialProviders(ctx)
+		if providerErr != nil {
+			return a.stopAfterStart(control, session.ID, "credential provider discovery failed", providerErr)
+		}
+		provider, providerErr := selectCredentialProvider(providers, profile)
+		if providerErr != nil {
+			return a.stopAfterStart(control, session.ID, "credential provider binding unavailable", providerErr)
+		}
+		registry, registryErr := credentialruntime.NewRegistry(a.CredentialAdapters...)
+		if registryErr != nil {
+			return a.stopAfterStart(control, session.ID, "credential runtime registry failed", registryErr)
+		}
+		environment, registryErr = registry.Configure(provider.CredentialKind, credentialruntime.ConfigureRequest{
+			Store: store, Executable: executable, ActivePath: activePath, Profile: profile,
+			Session: session, Provider: provider, BaseEnv: environment,
+		})
+		if registryErr != nil {
+			return a.stopAfterStart(control, session.ID, "credential runtime initialization failed", registryErr)
+		}
+	}
 	fmt.Fprintf(a.Out, "Session %s started with %s.\n", session.ID, profile.Agent)
 	runCtx, cancelRun := context.WithCancel(ctx)
 	refreshDone := make(chan struct{})
@@ -696,6 +741,18 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Out, "Session %s stopped.\n", session.ID)
 	}
 	return nil
+}
+
+func selectCredentialProvider(providers []controlclient.CredentialProvider, profile domain.SessionProfile) (controlclient.CredentialProvider, error) {
+	if profile.CredentialBinding == nil {
+		return controlclient.CredentialProvider{}, errors.New("profile has no credential binding")
+	}
+	for _, provider := range providers {
+		if provider.Release == profile.CredentialBinding.ProviderRelease && provider.Provider == profile.Scope.Provider {
+			return provider, nil
+		}
+	}
+	return controlclient.CredentialProvider{}, fmt.Errorf("provider release %s is not published for %s", profile.CredentialBinding.ProviderRelease, profile.Scope.Provider)
 }
 
 func (a *App) refreshLoop(ctx context.Context, stop context.CancelFunc, done chan<- struct{}, engine enforcement.Engine, activePath string) {
@@ -1025,8 +1082,9 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|run|status|sync|uninstall>")
 	fmt.Fprintln(a.Err, "       misconfig profile <create|list|migrate>")
+	fmt.Fprintln(a.Err, "       misconfig credential <providers|connection>")
 }
 
 func writeJSON(out io.Writer, value any) error {

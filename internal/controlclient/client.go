@@ -51,15 +51,60 @@ type DeviceAuthorizationExchange struct {
 }
 
 type CreateProfileRequest struct {
-	Name             string                  `json:"name"`
-	Agent            string                  `json:"agent"`
-	Workspace        string                  `json:"workspace"`
-	Scope            domain.Scope            `json:"scope"`
-	Enforcement      domain.EnforcementLevel `json:"enforcement"`
-	CredentialMode   domain.CredentialMode   `json:"credential_mode"`
-	AdapterRelease   string                  `json:"adapter_release"`
-	Rules            []policy.Rule           `json:"rules"`
-	PolicyTTLSeconds int64                   `json:"policy_ttl_seconds"`
+	Name              string                    `json:"name"`
+	Agent             string                    `json:"agent"`
+	Workspace         string                    `json:"workspace"`
+	Scope             domain.Scope              `json:"scope"`
+	Enforcement       domain.EnforcementLevel   `json:"enforcement"`
+	CredentialMode    domain.CredentialMode     `json:"credential_mode"`
+	CredentialBinding *domain.CredentialBinding `json:"credential_binding,omitempty"`
+	AdapterRelease    string                    `json:"adapter_release"`
+	Rules             []policy.Rule             `json:"rules"`
+	PolicyTTLSeconds  int64                     `json:"policy_ttl_seconds"`
+}
+
+type CredentialProvider struct {
+	Release             string `json:"release"`
+	Provider            string `json:"provider"`
+	CredentialKind      string `json:"credential_kind"`
+	MaximumTTLSeconds   int64  `json:"maximum_ttl_seconds"`
+	ConfigurationSchema string `json:"configuration_schema"`
+	RevocationSemantics string `json:"revocation_semantics"`
+}
+
+type CredentialConnection struct {
+	ID              string     `json:"id"`
+	TenantID        string     `json:"tenant_id"`
+	Provider        string     `json:"provider"`
+	AccountRef      string     `json:"account_ref"`
+	ProviderRelease string     `json:"provider_release"`
+	Name            string     `json:"name"`
+	State           string     `json:"state"`
+	TargetIdentity  string     `json:"target_identity,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	VerifiedAt      *time.Time `json:"verified_at,omitempty"`
+	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+}
+
+type CreateCredentialConnectionRequest struct {
+	Provider        string          `json:"provider"`
+	ProviderRelease string          `json:"provider_release"`
+	AccountRef      string          `json:"account_ref"`
+	Name            string          `json:"name"`
+	Input           json.RawMessage `json:"input"`
+}
+
+type PreparedCredentialConnection struct {
+	Connection CredentialConnection `json:"connection"`
+	Onboarding json.RawMessage      `json:"onboarding"`
+}
+
+type CredentialMaterial struct {
+	Kind                string          `json:"kind"`
+	Payload             json.RawMessage `json:"payload"`
+	ExpiresAt           time.Time       `json:"expires_at"`
+	TargetIdentity      string          `json:"target_identity"`
+	RevocationSemantics string          `json:"revocation_semantics"`
 }
 
 type CreateProfileSuccessorRequest struct {
@@ -132,6 +177,44 @@ func (c Client) Profiles(ctx context.Context) ([]domain.SessionProfile, error) {
 	}
 	err := c.request(ctx, http.MethodGet, "/v1/session-profiles", c.Token, c.TenantID, nil, &response)
 	return response.Profiles, err
+}
+
+func (c Client) CredentialProviders(ctx context.Context) ([]CredentialProvider, error) {
+	var response struct {
+		Providers []CredentialProvider `json:"providers"`
+	}
+	err := c.request(ctx, http.MethodGet, "/v1/credential-providers", c.Token, c.TenantID, nil, &response)
+	return response.Providers, err
+}
+
+func (c Client) CreateCredentialConnection(ctx context.Context, request CreateCredentialConnectionRequest) (PreparedCredentialConnection, error) {
+	var response PreparedCredentialConnection
+	err := c.request(ctx, http.MethodPost, "/v1/credential-connections", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) CredentialConnections(ctx context.Context) ([]CredentialConnection, error) {
+	var response struct {
+		Connections []CredentialConnection `json:"connections"`
+	}
+	err := c.request(ctx, http.MethodGet, "/v1/credential-connections", c.Token, c.TenantID, nil, &response)
+	return response.Connections, err
+}
+
+func (c Client) VerifyCredentialConnection(ctx context.Context, connectionID string) (CredentialConnection, error) {
+	var response CredentialConnection
+	err := c.request(ctx, http.MethodPost, "/v1/credential-connections/"+url.PathEscape(connectionID)+"/verify", c.Token, c.TenantID, map[string]any{}, &response)
+	return response, err
+}
+
+func (c Client) RevokeCredentialConnection(ctx context.Context, connectionID string) error {
+	return c.request(ctx, http.MethodDelete, "/v1/credential-connections/"+url.PathEscape(connectionID), c.Token, c.TenantID, nil, nil)
+}
+
+func (c Client) CredentialLease(ctx context.Context, sessionID, requestID string) (CredentialMaterial, error) {
+	var response CredentialMaterial
+	err := c.request(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/credential-leases", c.Token, c.TenantID, map[string]string{"request_id": requestID}, &response)
+	return response, err
 }
 
 func (c Client) StartSession(ctx context.Context, profile domain.SessionProfile) (domain.AgentSession, error) {

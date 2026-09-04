@@ -184,6 +184,11 @@ func (s Store) SaveRuntimeConfig(sessionID, name string, value any) (string, err
 	return path, writeJSON(path, value)
 }
 
+func (s Store) SaveRuntimeText(sessionID, name, value string) (string, error) {
+	path := filepath.Join(s.Root, "runtime", safe(sessionID), safe(name))
+	return path, writeSecret(path, value)
+}
+
 func (s Store) PolicyPath(sessionID string) string {
 	return filepath.Join(s.Root, "policies", safe(sessionID)+".json")
 }

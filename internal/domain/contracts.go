@@ -60,6 +60,21 @@ type Scope struct {
 	ResourcePrefixes []string `json:"resource_prefixes,omitempty"`
 }
 
+// CredentialBinding is the immutable, provider-neutral connection selected by
+// a brokered session profile. Provider-native credential material is never
+// stored here.
+type CredentialBinding struct {
+	ConnectionID    string `json:"connection_id"`
+	ProviderRelease string `json:"provider_release"`
+}
+
+func (b CredentialBinding) Validate() error {
+	if strings.TrimSpace(b.ConnectionID) == "" || strings.TrimSpace(b.ProviderRelease) == "" {
+		return errors.New("credential connection and provider release are required")
+	}
+	return nil
+}
+
 func (s Scope) Validate() error {
 	if strings.TrimSpace(s.Provider) == "" {
 		return errors.New("provider is required")
@@ -79,17 +94,18 @@ func (s Scope) Validate() error {
 }
 
 type SessionProfile struct {
-	ID             string           `json:"id"`
-	TenantID       string           `json:"tenant_id"`
-	Name           string           `json:"name"`
-	Agent          AgentKind        `json:"agent"`
-	Workspace      string           `json:"workspace"`
-	Scope          Scope            `json:"scope"`
-	Enforcement    EnforcementLevel `json:"enforcement"`
-	CredentialMode CredentialMode   `json:"credential_mode"`
-	AdapterRelease string           `json:"adapter_release"`
-	PolicyRelease  string           `json:"policy_release"`
-	CreatedAt      time.Time        `json:"created_at"`
+	ID                string             `json:"id"`
+	TenantID          string             `json:"tenant_id"`
+	Name              string             `json:"name"`
+	Agent             AgentKind          `json:"agent"`
+	Workspace         string             `json:"workspace"`
+	Scope             Scope              `json:"scope"`
+	Enforcement       EnforcementLevel   `json:"enforcement"`
+	CredentialMode    CredentialMode     `json:"credential_mode"`
+	CredentialBinding *CredentialBinding `json:"credential_binding,omitempty"`
+	AdapterRelease    string             `json:"adapter_release"`
+	PolicyRelease     string             `json:"policy_release"`
+	CreatedAt         time.Time          `json:"created_at"`
 }
 
 func (p SessionProfile) Validate() error {
@@ -110,6 +126,17 @@ func (p SessionProfile) Validate() error {
 	}
 	if p.CredentialMode == CredentialAttach && p.Enforcement != EnforcementObserved && p.Enforcement != EnforcementHook {
 		return errors.New("attach credentials cannot claim brokered or verified enforcement")
+	}
+	if p.CredentialMode == CredentialAttach && p.CredentialBinding != nil {
+		return errors.New("attach credentials cannot bind a credential provider")
+	}
+	if p.CredentialMode == CredentialBrokered {
+		if p.CredentialBinding == nil {
+			return errors.New("brokered credentials require an immutable provider binding")
+		}
+		if err := p.CredentialBinding.Validate(); err != nil {
+			return err
+		}
 	}
 	if p.CreatedAt.IsZero() {
 		return errors.New("created_at is required")

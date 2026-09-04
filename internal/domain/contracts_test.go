@@ -15,6 +15,31 @@ func TestAttachModeCannotClaimBrokeredEnforcement(t *testing.T) {
 	}
 }
 
+func TestBrokeredProfileRequiresProviderNeutralImmutableBinding(t *testing.T) {
+	profile := validProfile()
+	profile.CredentialMode = CredentialBrokered
+	profile.Enforcement = EnforcementBrokered
+	if err := profile.Validate(); err == nil {
+		t.Fatal("brokered profile without a provider binding was accepted")
+	}
+	profile.CredentialBinding = &CredentialBinding{
+		ConnectionID: "con-1", ProviderRelease: "unfamiliar.session@1",
+	}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("provider-neutral brokered profile rejected: %v", err)
+	}
+}
+
+func TestAttachModeRejectsCredentialBinding(t *testing.T) {
+	profile := validProfile()
+	profile.CredentialBinding = &CredentialBinding{
+		ConnectionID: "con-1", ProviderRelease: "unfamiliar.session@1",
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("attach mode accepted a credential provider binding")
+	}
+}
+
 func TestProfileCanonicalOrderMatchesControlPlaneDigestContract(t *testing.T) {
 	encoded, err := json.Marshal(validProfile())
 	if err != nil {

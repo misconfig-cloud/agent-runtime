@@ -257,6 +257,73 @@ func TestBrowserDeviceAuthorizationUsesPublicOneTimeExchange(t *testing.T) {
 	}
 }
 
+func TestCredentialConnectionLifecycleUsesTenantBoundEndpoints(t *testing.T) {
+	now := time.Date(2026, 9, 5, 8, 0, 0, 0, time.UTC)
+	var created CreateCredentialConnectionRequest
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.EscapedPath())
+		if r.Header.Get("Authorization") != "Bearer device-token" || r.Header.Get("X-Misconfig-Tenant") != "tenant-a" {
+			t.Fatalf("credential request lost device or tenant identity: %#v", r.Header)
+		}
+		connection := CredentialConnection{
+			ID: "connection-a", TenantID: "tenant-a", Provider: "orbital-fabric",
+			AccountRef: "station-9", ProviderRelease: "orbital.session@1.0.0",
+			Name: "Station", State: "pending", CreatedAt: now,
+		}
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credential-providers":
+			writeTestJSON(t, w, http.StatusOK, map[string]any{"providers": []CredentialProvider{{Release: connection.ProviderRelease, Provider: connection.Provider, CredentialKind: "orbital.exec-token.v9"}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/credential-connections":
+			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+				t.Fatal(err)
+			}
+			writeTestJSON(t, w, http.StatusCreated, PreparedCredentialConnection{Connection: connection, Onboarding: json.RawMessage(`{"instruction":"configure station"}`)})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/credential-connections":
+			writeTestJSON(t, w, http.StatusOK, map[string]any{"connections": []CredentialConnection{connection}})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/credential-connections/connection-a/verify":
+			connection.State = "verified"
+			writeTestJSON(t, w, http.StatusOK, connection)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/credential-connections/connection-a":
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{BaseURL: server.URL, TenantID: "tenant-a", Token: "device-token"}
+	providers, err := client.CredentialProviders(context.Background())
+	if err != nil || len(providers) != 1 || providers[0].Provider != "orbital-fabric" {
+		t.Fatalf("providers = %#v err=%v", providers, err)
+	}
+	request := CreateCredentialConnectionRequest{
+		Provider: "orbital-fabric", ProviderRelease: "orbital.session@1.0.0",
+		AccountRef: "station-9", Name: "Station", Input: json.RawMessage(`{"audience":"edge"}`),
+	}
+	prepared, err := client.CreateCredentialConnection(context.Background(), request)
+	if err != nil || prepared.Connection.ID != "connection-a" || string(prepared.Onboarding) == "" {
+		t.Fatalf("prepared = %#v err=%v", prepared, err)
+	}
+	if created.Provider != request.Provider || created.ProviderRelease != request.ProviderRelease || string(created.Input) != string(request.Input) {
+		t.Fatalf("create request changed: %#v", created)
+	}
+	connections, err := client.CredentialConnections(context.Background())
+	if err != nil || len(connections) != 1 || connections[0].ID != "connection-a" {
+		t.Fatalf("connections = %#v err=%v", connections, err)
+	}
+	verified, err := client.VerifyCredentialConnection(context.Background(), "connection-a")
+	if err != nil || verified.State != "verified" {
+		t.Fatalf("verified = %#v err=%v", verified, err)
+	}
+	if err := client.RevokeCredentialConnection(context.Background(), "connection-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 5 {
+		t.Fatalf("unexpected credential lifecycle requests: %#v", paths)
+	}
+}
+
 func testProfile() domain.SessionProfile {
 	return domain.SessionProfile{
 		ID: "profile-a", TenantID: "tenant-a", Name: "Production", Agent: domain.AgentCodex,

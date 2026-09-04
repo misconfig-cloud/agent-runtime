@@ -92,3 +92,46 @@ func fixture(t *testing.T) (domain.SessionProfile, domain.AgentSession, domain.A
 	}
 	return profile, session, action, bundle
 }
+
+func TestEvaluatorDoesNotRequireAProviderToBeKnownByTheCore(t *testing.T) {
+	now := time.Now().UTC()
+	profile := domain.SessionProfile{
+		ID: "profile-orbital", TenantID: "tenant-1", Name: "Orbital production", Agent: domain.AgentCodex,
+		Workspace: "/tmp/repo",
+		Scope: domain.Scope{
+			Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
+			ResourcePrefixes: []string{"orbital://station-9/"},
+		},
+		Enforcement: domain.EnforcementHook, CredentialMode: domain.CredentialAttach,
+		PolicyRelease: "policy@1", AdapterRelease: "codex@1", CreatedAt: now,
+	}
+	digest, err := domain.Digest(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.AgentSession{
+		ID: "session-orbital", TenantID: profile.TenantID, ProfileID: profile.ID, ProfileDigest: digest,
+		ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
+	}
+	action := domain.ActionEnvelope{
+		ID: "action-orbital", TenantID: profile.TenantID, ActorID: session.ActorID, DeviceID: session.DeviceID,
+		SessionID: session.ID, Agent: profile.Agent, AdapterRelease: profile.AdapterRelease,
+		Tool: "orbital_read", Operation: "tool.OrbitalRead", Resource: "orbital://station-9/node/7",
+		Destination: domain.Destination{
+			Provider: "orbital-fabric", AccountRef: "station-9", Environment: "production",
+		},
+		RequestedAt: now,
+	}
+	bundle := Bundle{
+		Release: profile.PolicyRelease, TenantID: profile.TenantID, ProfileID: profile.ID,
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		Rules: []Rule{{
+			ID: "allow-orbital-read", Effect: EffectAllow, Providers: []string{"orbital-fabric"},
+			Operations: []string{"tool.OrbitalRead"}, ResourcePrefixes: []string{"orbital://station-9/"}, Reason: "bounded read",
+		}},
+	}
+	decision := (Evaluator{Bundle: bundle}).Evaluate(profile, session, action, now)
+	if decision.Effect != EffectAllow || decision.RuleID != "allow-orbital-read" {
+		t.Fatalf("unfamiliar provider decision = %#v", decision)
+	}
+}

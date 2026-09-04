@@ -135,6 +135,28 @@ func TestNativeShellToolsShareOneStableOperation(t *testing.T) {
 	}
 }
 
+func TestActionEnvelopeKeepsAnUnfamiliarProviderInItsDeclaredScope(t *testing.T) {
+	profile := domain.SessionProfile{Agent: domain.AgentCodex, AdapterRelease: "codex@0.152.0", Scope: domain.Scope{
+		Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
+		ResourcePrefixes: []string{"orbital://station-9/"},
+	}}
+	session := domain.AgentSession{ID: "session-1", TenantID: "tenant-1", ActorID: "actor-1", DeviceID: "device-1"}
+	action, err := Action(profile, session, Input{
+		HookEventName: "PreToolUse", ToolName: "orbital_read",
+		ToolInput: map[string]any{"station": "station-9"}, ToolUseID: "call-1", CWD: "/work",
+	}, time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action.Destination.Provider != "orbital-fabric" || action.Destination.AccountRef != "station-9" ||
+		action.Operation != "tool.OrbitalRead" || action.Resource != "orbital://station-9/" {
+		t.Fatalf("unfamiliar provider envelope = %#v", action)
+	}
+	if err := action.Validate(); err != nil {
+		t.Fatalf("unfamiliar provider envelope was rejected: %v", err)
+	}
+}
+
 func TestActionRetainsOnlySafeNativeCorrelation(t *testing.T) {
 	profile := domain.SessionProfile{Agent: domain.AgentCodex, AdapterRelease: "codex@0.152.0", Scope: domain.Scope{
 		Provider: "aws", AccountRef: "123456789012", Environments: []string{"production"},
