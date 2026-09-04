@@ -27,19 +27,42 @@ manually.
 
 Release archives are self-contained. Installing one does not require Go, Git,
 or a source checkout. Select the archive matching macOS or Linux and the
-machine architecture, verify it against `checksums.txt`, then extract it:
+machine architecture. Verify the signed checksum manifest, verify only the
+archive you downloaded, then extract it:
 
 ```sh
-sha256sum -c checksums.txt
-tar -xzf misconfig_VERSION_OS_ARCH.tar.gz
+VERSION=0.1.0
+ARCHIVE="misconfig_${VERSION}_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz"
+BASE_URL="https://github.com/misconfig-cloud/agent-runtime/releases/download/v${VERSION}"
+
+curl --fail --location --remote-name "${BASE_URL}/${ARCHIVE}"
+curl --fail --location --remote-name "${BASE_URL}/checksums.txt"
+curl --fail --location --remote-name "${BASE_URL}/checksums.txt.sigstore.json"
+
+cosign verify-blob \
+  --bundle checksums.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/misconfig-cloud/agent-runtime/.github/workflows/release.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+
+grep "  ${ARCHIVE}$" checksums.txt | shasum -a 256 -c -
+tar -xzf "${ARCHIVE}"
 sudo ./install.sh
 ```
 
-macOS provides `shasum -a 256 -c checksums.txt` in place of `sha256sum`.
 `checksums.txt` covers every archive, `manifest.json`, `compatibility.json`, and
-the SPDX 2.3 `sbom.spdx.json`. It is the subject intended for release signing.
-Until detached signatures are published, obtain it through the same trusted
-release channel as the archive.
+the SPDX 2.3 `sbom.spdx.json`. Each published checksum manifest has a Sigstore
+bundle signed by the tag-only GitHub Actions workflow. Every release artifact
+also has GitHub build provenance. Verify it with:
+
+```sh
+gh attestation verify "${ARCHIVE}" -R misconfig-cloud/agent-runtime
+```
+
+The release workflow, source commit, SBOM, adapter compatibility statement,
+and archive digest are therefore inspectable before installation. A signature
+proves release origin and integrity; it does not replace review of the scoped
+rules and credentials used by a governed session.
 
 Pin the expected release during an install or upgrade:
 
@@ -87,6 +110,9 @@ IDs, fixes archive metadata to `SOURCE_DATE_EPOCH`, and emits `manifest.json`,
 `compatibility.json`, an SPDX 2.3 SBOM, and `checksums.txt`. Compatibility is
 stated per exact native-client version and distinguishes live acceptance from
 fixture-only coverage. The builder refuses to overwrite a release by default.
+Version tags are the only public release trigger. The workflow uses keyless
+GitHub OIDC signing and GitHub artifact attestations; there is no long-lived
+release signing key.
 
 ## Enrol one device
 

@@ -20,8 +20,9 @@ Report vulnerabilities privately to contact@misconfig.cloud.
   release manifest pins source identity, platform, byte size, and SHA-256 for
   every artifact plus the compatibility manifest and SPDX SBOM. Installation
   is verified and atomic, with rollback to the previous binary on failed
-  post-install verification. `checksums.txt` is ready for detached signing; it
-  is not a signature by itself.
+  post-install verification. Public releases carry a keyless Sigstore bundle
+  over `checksums.txt` and GitHub build provenance over every shipped artifact.
+  Customers must verify both the bundle and the selected archive checksum.
 
 ## What this release does not claim
 

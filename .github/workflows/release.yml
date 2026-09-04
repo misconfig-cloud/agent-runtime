@@ -1,0 +1,83 @@
+name: Release runtime
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions: {}
+
+jobs:
+  release:
+    name: Build, sign, attest, and publish
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Validate the source and tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          test "v${version}" = "${GITHUB_REF_NAME}"
+          test "$(git rev-list -n 1 "${GITHUB_REF_NAME}")" = "${GITHUB_SHA}"
+          make check
+
+      - name: Build reproducible release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          make release \
+            RELEASE_VERSION="${version}" \
+            RELEASE_COMMIT="${GITHUB_SHA}" \
+            SOURCE_DATE_EPOCH="${source_date_epoch}"
+          make verify-release
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the checksum manifest with GitHub OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle dist/checksums.txt.sigstore.json \
+            dist/checksums.txt
+
+      - name: Attest the release artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        with:
+          subject-path: |
+            dist/misconfig_*.tar.gz
+            dist/manifest.json
+            dist/compatibility.json
+            dist/sbom.spdx.json
+            dist/checksums.txt
+
+      - name: Publish the immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --title "Misconfig Runtime ${GITHUB_REF_NAME}" \
+            --generate-notes
