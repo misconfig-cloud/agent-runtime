@@ -3,6 +3,7 @@ package credentialruntime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,6 +28,43 @@ func externalFixtureProvider(artifact []byte) controlclient.CredentialProvider {
 		RendererArtifacts:    []controlclient.RendererArtifact{{OS: runtime.GOOS, Arch: runtime.GOARCH, Digest: digestBytes(artifact)}},
 		SensitiveEnvironment: []string{"ORBITAL_TOKEN", "ORBITAL_CONFIG"},
 		AdmissionRequired:    true,
+	}
+}
+
+func TestRendererReceivesExactScopeOnlyWhenReleaseSupportsIt(t *testing.T) {
+	artifact := []byte("fixture-renderer")
+	provider := externalFixtureProvider(artifact)
+	path := filepath.Join(t.TempDir(), "renderer")
+	if err := os.WriteFile(path, artifact, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	request := ConfigureRequest{
+		Store: localstate.Store{Root: t.TempDir()}, Executable: "/bin/misconfig", ActivePath: "/tmp/active", Provider: provider,
+		Session: domain.AgentSession{ID: "session-exact"}, Profile: domain.SessionProfile{
+			Scope:             domain.Scope{Provider: provider.Provider, AccountRef: "station", Environments: []string{"test"}, ResourceIDs: []string{"orbital://station/7"}},
+			CredentialBinding: &domain.CredentialBinding{ConnectionID: "c", ProviderRelease: provider.Release},
+		},
+	}
+	calls := 0
+	runner := func(_ context.Context, _, _ string, raw []byte) ([]byte, error) {
+		calls++
+		var payload provideradapter.ConfigureRequest
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(payload.ResourceIDs, request.Profile.Scope.ResourceIDs) || len(payload.ResourcePrefixes) != 0 {
+			t.Fatalf("exact scope was widened: %#v", payload)
+		}
+		return nil, errors.New("fixture stops after inspecting configure request")
+	}
+	if _, err := (External{Provider: provider, RendererPath: path, RunRenderer: runner}).Configure(request); err == nil || calls != 0 {
+		t.Fatal("unsupported release invoked renderer")
+	}
+	provider.AuthorizationFeatures = []string{provideradapter.AuthorizationExactResourcesV1}
+	request.Provider = provider
+	_, _ = (External{Provider: provider, RendererPath: path, RunRenderer: runner}).Configure(request)
+	if calls != 1 {
+		t.Fatal("supported renderer did not receive exact scope")
 	}
 }
 

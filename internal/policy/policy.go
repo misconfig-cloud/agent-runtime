@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
+
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 )
 
@@ -26,12 +28,14 @@ const (
 )
 
 type Rule struct {
-	ID               string   `json:"id"`
-	Effect           Effect   `json:"effect"`
-	Providers        []string `json:"providers,omitempty"`
-	Operations       []string `json:"operations,omitempty"`
-	ResourcePrefixes []string `json:"resource_prefixes,omitempty"`
-	Reason           string   `json:"reason"`
+	ID               string                           `json:"id"`
+	Effect           Effect                           `json:"effect"`
+	Providers        []string                         `json:"providers,omitempty"`
+	Operations       []string                         `json:"operations,omitempty"`
+	ResourcePrefixes []string                         `json:"resource_prefixes,omitempty"`
+	ResourceIDs      []string                         `json:"resource_ids,omitempty"`
+	ParameterLimits  *provideradapter.ParameterLimits `json:"parameter_limits,omitempty"`
+	Reason           string                           `json:"reason"`
 }
 
 type Bundle struct {
@@ -72,6 +76,17 @@ func (b Bundle) Validate(now time.Time) error {
 		return errors.New("at least one policy rule is required")
 	}
 	for _, rule := range b.Rules {
+		if err := provideradapter.ValidateResourceSelection(rule.ResourcePrefixes, rule.ResourceIDs); err != nil {
+			return err
+		}
+		if rule.ParameterLimits != nil {
+			if rule.Effect != EffectAllow && rule.Effect != EffectTyped {
+				return errors.New("parameter ceilings require an allow or typed rule")
+			}
+			if err := rule.ParameterLimits.Validate(); err != nil {
+				return err
+			}
+		}
 		if strings.TrimSpace(rule.ID) == "" || strings.TrimSpace(rule.Reason) == "" {
 			return errors.New("every rule requires id and reason")
 		}
@@ -158,11 +173,28 @@ func (e Evaluator) Evaluate(profile domain.SessionProfile, session domain.AgentS
 		!slices.Contains(profile.Scope.Environments, action.Destination.Environment) {
 		return fail("action destination is outside the session scope")
 	}
-	if len(profile.Scope.ResourcePrefixes) > 0 && !hasPrefix(action.Resource, profile.Scope.ResourcePrefixes) {
+	if !provideradapter.MatchesResources(action.Resource, profile.Scope.ResourcePrefixes, profile.Scope.ResourceIDs) {
 		return fail("action resource is outside the session scope")
 	}
+	// Preserve stop/deny precedence even when a parameter ceiling also fails.
+	for _, effect := range []Effect{EffectStop, EffectDeny} {
+		for _, rule := range e.Bundle.Rules {
+			if rule.Effect == effect && matches(rule, action) {
+				return Decision{Effect: rule.Effect, RuleID: rule.ID, Reason: rule.Reason, PolicyRelease: e.Bundle.Release}
+			}
+		}
+	}
+	parameters, err := json.Marshal(action.Parameters)
+	if err != nil {
+		return fail("action parameters cannot be verified")
+	}
+	for _, rule := range e.Bundle.Rules {
+		if rule.ParameterLimits != nil && matches(rule, action) && !rule.ParameterLimits.Matches(parameters) {
+			return fail("action parameters exceed the task limits")
+		}
+	}
 
-	for _, effect := range []Effect{EffectStop, EffectDeny, EffectApproval, EffectTyped, EffectAllow} {
+	for _, effect := range []Effect{EffectApproval, EffectTyped, EffectAllow} {
 		for _, rule := range e.Bundle.Rules {
 			if rule.Effect == effect && matches(rule, action) {
 				return Decision{Effect: rule.Effect, RuleID: rule.ID, Reason: rule.Reason, PolicyRelease: e.Bundle.Release}
@@ -175,7 +207,7 @@ func (e Evaluator) Evaluate(profile domain.SessionProfile, session domain.AgentS
 func matches(rule Rule, action domain.ActionEnvelope) bool {
 	return memberOrAny(rule.Providers, action.Destination.Provider) &&
 		memberOrAny(rule.Operations, action.Operation) &&
-		(len(rule.ResourcePrefixes) == 0 || hasPrefix(action.Resource, rule.ResourcePrefixes))
+		provideradapter.MatchesResources(action.Resource, rule.ResourcePrefixes, rule.ResourceIDs)
 }
 
 func memberOrAny(values []string, actual string) bool {

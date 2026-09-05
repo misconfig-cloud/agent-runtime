@@ -296,12 +296,14 @@ func credentialAuthorizationDigest(store localstate.Store, config localstate.Con
 		rules = append(rules, provideradapter.AuthorizationRule{
 			ID: rule.ID, Effect: string(rule.Effect), Providers: rule.Providers,
 			Operations: rule.Operations, ResourcePrefixes: rule.ResourcePrefixes,
+			ResourceIDs: rule.ResourceIDs, ParameterLimits: rule.ParameterLimits,
 		})
 	}
 	return provideradapter.AuthorizationDigest(provideradapter.Authorization{
 		ProfileDigest: profileDigest, PolicyRelease: signed.Bundle.Release,
 		Provider: active.Profile.Scope.Provider, AccountRef: active.Profile.Scope.AccountRef,
 		Environments: active.Profile.Scope.Environments, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes,
-		Rules: rules,
+		ResourceIDs: active.Profile.Scope.ResourceIDs,
+		Rules:       rules,
 	})
 }

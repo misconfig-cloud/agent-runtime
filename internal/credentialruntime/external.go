@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -104,6 +105,12 @@ func (e External) Configure(request ConfigureRequest) ([]string, error) {
 	if err := validateExternalDescriptor(e.Provider); err != nil {
 		return nil, err
 	}
+	if err := provideradapter.ValidateResourceSelection(request.Profile.Scope.ResourcePrefixes, request.Profile.Scope.ResourceIDs); err != nil {
+		return nil, err
+	}
+	if request.Profile.Scope.ResourceIDs != nil && !slices.Contains(e.Provider.AuthorizationFeatures, provideradapter.AuthorizationExactResourcesV1) {
+		return nil, errors.New("credential release does not enforce the selected exact resources")
+	}
 	if request.Profile.CredentialBinding == nil || request.Provider.Release != e.Provider.Release ||
 		request.Provider.Provider != request.Profile.Scope.Provider || request.Provider.Provider != e.Provider.Provider ||
 		request.Provider.ManifestDigest != e.Provider.ManifestDigest ||
@@ -130,6 +137,7 @@ func (e External) Configure(request ConfigureRequest) ([]string, error) {
 		AccountRef:       request.Profile.Scope.AccountRef,
 		Environments:     append([]string(nil), request.Profile.Scope.Environments...),
 		ResourcePrefixes: append([]string(nil), request.Profile.Scope.ResourcePrefixes...),
+		ResourceIDs:      request.Profile.Scope.ResourceIDs,
 		ActivePath:       request.ActivePath, RuntimeExecutable: request.Executable,
 		RendererExecutable: e.RendererPath, RuntimeDirectory: request.Store.RuntimeDirectory(request.Session.ID),
 		LeaseCommand: leaseCommand,

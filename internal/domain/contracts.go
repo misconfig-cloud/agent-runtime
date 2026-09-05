@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
 )
 
 func NewID(prefix string) (string, error) {
@@ -59,6 +61,7 @@ type Scope struct {
 	AccountRef       string   `json:"account_ref"`
 	Environments     []string `json:"environments"`
 	ResourcePrefixes []string `json:"resource_prefixes,omitempty"`
+	ResourceIDs      []string `json:"resource_ids,omitempty"`
 }
 
 // CredentialBinding is the immutable, provider-neutral connection selected by
@@ -91,6 +94,9 @@ func (b CredentialBinding) Validate() error {
 }
 
 func (s Scope) Validate() error {
+	if err := provideradapter.ValidateResourceSelection(s.ResourcePrefixes, s.ResourceIDs); err != nil {
+		return err
+	}
 	if strings.TrimSpace(s.Provider) == "" {
 		return errors.New("provider is required")
 	}
