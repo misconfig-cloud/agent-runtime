@@ -293,9 +293,11 @@ func TestNativeDecisionContracts(t *testing.T) {
 		permission  string
 	}{
 		{name: "codex allow is silent", agent: "codex", effect: policy.EffectAllow},
+		{name: "codex deny remains deny", agent: "codex", effect: policy.EffectDeny, wantOutput: true, permission: "deny"},
 		{name: "codex ask becomes deny", agent: "codex", effect: policy.EffectApproval, wantOutput: true, permission: "deny"},
 		{name: "claude ask remains ask", agent: "claude", effect: policy.EffectApproval, wantOutput: true, permission: "ask"},
 		{name: "claude allow is explicit", agent: "claude", effect: policy.EffectAllow, wantOutput: true, permission: "allow"},
+		{name: "claude deny remains deny", agent: "claude", effect: policy.EffectDeny, wantOutput: true, permission: "deny"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

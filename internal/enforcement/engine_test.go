@@ -92,6 +92,65 @@ func TestPreAndPostProduceDurableBoundReceipts(t *testing.T) {
 	}
 }
 
+func TestNativeAdapterDecisionMatrixPreservesPathAndPolicyIdentity(t *testing.T) {
+	paths := []struct {
+		name      string
+		parentID  string
+		agentID   string
+		wantClass string
+	}{
+		{name: "direct", wantClass: "direct"},
+		{name: "nested", parentID: "parent-tool-use", wantClass: "nested"},
+		{name: "subagent", agentID: "child-agent", wantClass: "subagent"},
+	}
+	effects := []struct {
+		effect      policy.Effect
+		wantOutcome spool.Outcome
+	}{
+		{effect: policy.EffectAllow, wantOutcome: spool.OutcomeApproved},
+		{effect: policy.EffectDeny, wantOutcome: spool.OutcomeBlocked},
+		{effect: policy.EffectApproval, wantOutcome: spool.OutcomeWaitingForApproval},
+	}
+
+	for _, agent := range []domain.AgentKind{domain.AgentCodex, domain.AgentClaude} {
+		for _, effect := range effects {
+			for _, path := range paths {
+				name := string(agent) + "/" + string(effect.effect) + "/" + path.name
+				t.Run(name, func(t *testing.T) {
+					engine, control, activePath, _ := fixtureForAgent(t, agent, effect.effect)
+					input := hook.Input{
+						SessionID: "native-" + string(agent), TurnID: "turn-1",
+						HookEventName: "PreToolUse", ToolName: "Bash", ToolUseID: "tool-1",
+						ParentToolUseID: path.parentID, AgentID: path.agentID,
+						ToolInput: map[string]any{"command": "aws ec2 describe-instances --region eu-central-1"},
+					}
+					result, err := engine.Pre(context.Background(), activePath, input)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if result.Decision.Effect != effect.effect || result.Decision.RuleID != "decision" {
+						t.Fatalf("decision = %#v", result.Decision)
+					}
+					if result.Action.Agent != agent || result.Action.Native.PathClass != path.wantClass ||
+						result.Action.Native.ParentToolUseID != path.parentID || result.Action.Native.AgentID != path.agentID {
+						t.Fatalf("native identity = %#v", result.Action.Native)
+					}
+					if err := engine.Replay(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+					if len(control.receipts) != 1 || control.receipts[0].Outcome != effect.wantOutcome ||
+						control.receipts[0].Decision.Effect != effect.effect || control.receipts[0].Action.Native.PathClass != path.wantClass {
+						t.Fatalf("receipt = %#v", control.receipts)
+					}
+					if control.receipts[0].VerificationState != spool.VerificationNotRequested {
+						t.Fatalf("policy decision invented execution verification: %#v", control.receipts[0])
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestRemoteStopOverridesLocallyCachedAllow(t *testing.T) {
 	engine, control, activePath, _ := fixture(t, policy.EffectAllow)
 	control.session.State = domain.SessionStopped
@@ -282,6 +341,10 @@ func TestNativeHookRetryReusesActionAndReceiptAcrossRestart(t *testing.T) {
 }
 
 func fixture(t *testing.T, effect policy.Effect) (Engine, *fakeControl, string, time.Time) {
+	return fixtureForAgent(t, domain.AgentCodex, effect)
+}
+
+func fixtureForAgent(t *testing.T, agent domain.AgentKind, effect policy.Effect) (Engine, *fakeControl, string, time.Time) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
@@ -291,10 +354,10 @@ func fixture(t *testing.T, effect policy.Effect) (Engine, *fakeControl, string, 
 		t.Fatal(err)
 	}
 	profile := domain.SessionProfile{
-		ID: "profile-1", TenantID: "tenant-1", Name: "AWS production", Agent: domain.AgentCodex,
+		ID: "profile-1", TenantID: "tenant-1", Name: "AWS production", Agent: agent,
 		Workspace: root, Scope: domain.Scope{Provider: "aws", AccountRef: "123456789012", Environments: []string{"production"}},
 		Enforcement: domain.EnforcementHook, CredentialMode: domain.CredentialAttach,
-		PolicyRelease: "policy@1", AdapterRelease: "codex@1", CreatedAt: now,
+		PolicyRelease: "policy@1", AdapterRelease: string(agent) + "@1", CreatedAt: now,
 	}
 	digest, err := domain.Digest(profile)
 	if err != nil {
