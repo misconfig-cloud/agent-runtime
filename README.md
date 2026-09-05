@@ -23,6 +23,23 @@ misconfig version
 `misconfig hook` is an internal native-adapter entry point. Do not invoke it
 manually.
 
+### Typed actions in the development runtime
+
+`misconfig action propose`, `action list`, and `action execute` require an
+active session created by `misconfig run`. They verify the live session and
+current signed policy. Listing or executing another session's actions is not
+supported from this surface; inspect other sessions in the console.
+
+Proposals and executions must satisfy the session's exact resource selection
+and parameter limits. Execution still requires the control plane's action
+approval and execution-time checks. A successful tool invocation alone is not
+proof that the provider change succeeded; inspect its verification result.
+
+This source-level action path does **not** yet provide automatic typed-tool
+bootstrap inside the coding agent. Native hooks and the action CLI alone do
+not complete the guided task-to-agent workflow. These local checks are also
+not isolation from another process that can access the device credential.
+
 ## Install a release
 
 Release archives are self-contained. Installing one does not require Go, Git,

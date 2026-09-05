@@ -49,14 +49,15 @@ func (a *App) proposeAction(ctx context.Context, args []string) error {
 	if !allPresent(*capability, *operation, *resource, *parametersFile) {
 		return exitError{code: 2, err: errors.New("action propose requires --capability, --operation, --resource, and --parameters-file")}
 	}
-	_, config, control, err := a.authenticated()
+	store, config, control, err := a.authenticated()
 	if err != nil {
 		return err
 	}
-	active, err := a.activeSession(config)
+	session, err := a.loadActionSession(ctx, store, config, control)
 	if err != nil {
 		return err
 	}
+	active := session.active
 	selectedEnvironment := strings.TrimSpace(*environment)
 	if selectedEnvironment == "" {
 		if len(active.Profile.Scope.Environments) != 1 {
@@ -68,6 +69,9 @@ func (a *App) proposeAction(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.checkTypedAction(session, strings.TrimSpace(*operation), strings.TrimSpace(*resource), selectedEnvironment, parameters); err != nil {
+		return err
+	}
 	action, err := control.CreateTypedAction(ctx, controlclient.CreateTypedActionRequest{
 		SessionID: active.Session.ID, CapabilityRef: strings.TrimSpace(*capability),
 		Operation: strings.TrimSpace(*operation), Resource: strings.TrimSpace(*resource),
@@ -75,6 +79,9 @@ func (a *App) proposeAction(ctx context.Context, args []string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("propose typed action: %w", err)
+	}
+	if !session.owns(action) {
+		return errors.New("proposed action does not belong to the active session")
 	}
 	return writeJSON(a.Out, action)
 }
@@ -88,21 +95,25 @@ func (a *App) listActions(ctx context.Context, args []string) error {
 	if flags.NArg() != 0 {
 		return exitError{code: 2, err: errors.New("action list does not accept positional arguments")}
 	}
-	_, config, control, err := a.authenticated()
+	store, config, control, err := a.authenticated()
 	if err != nil {
 		return err
 	}
-	selectedSession := strings.TrimSpace(*sessionID)
-	if selectedSession == "" {
-		active, err := a.activeSession(config)
-		if err != nil {
-			return err
-		}
-		selectedSession = active.Session.ID
+	session, err := a.loadActionSession(ctx, store, config, control)
+	if err != nil {
+		return err
 	}
-	actions, err := control.TypedActions(ctx, selectedSession)
+	if selected := strings.TrimSpace(*sessionID); selected != "" && selected != session.active.Session.ID {
+		return errors.New("action list cannot select another session; use the console to inspect other sessions")
+	}
+	actions, err := control.TypedActions(ctx, session.active.Session.ID)
 	if err != nil {
 		return fmt.Errorf("list typed actions: %w", err)
+	}
+	for _, action := range actions {
+		if !session.owns(action) {
+			return errors.New("action list contains an action outside the active session")
+		}
 	}
 	return writeJSON(a.Out, map[string]any{"actions": actions})
 }
@@ -118,13 +129,51 @@ func (a *App) executeAction(ctx context.Context, args []string) error {
 	} else if flags.NArg() != 0 || strings.TrimSpace(*actionID) == "" {
 		return exitError{code: 2, err: errors.New("action execute requires --id or one action ID")}
 	}
-	_, _, control, err := a.authenticated()
+	store, config, control, err := a.authenticated()
 	if err != nil {
+		return err
+	}
+	session, err := a.loadActionSession(ctx, store, config, control)
+	if err != nil {
+		return err
+	}
+	actions, err := control.TypedActions(ctx, session.active.Session.ID)
+	if err != nil {
+		return fmt.Errorf("verify action belongs to active session: %w", err)
+	}
+	var selected *controlclient.TypedAction
+	for i := range actions {
+		if !session.owns(actions[i]) {
+			return errors.New("action list contains an action outside the active session")
+		}
+		if actions[i].ID == strings.TrimSpace(*actionID) {
+			selected = &actions[i]
+		}
+	}
+	if selected == nil {
+		return errors.New("action was not found in the active session")
+	}
+	if selected.Provider != session.active.Profile.Scope.Provider || selected.AccountRef != session.active.Profile.Scope.AccountRef || selected.PolicyRelease != session.policy.Release {
+		return errors.New("action does not match the active task authority")
+	}
+	providerRelease := ""
+	if binding := session.active.Profile.ProviderBinding; binding != nil {
+		providerRelease = binding.ProviderRelease
+	} else if binding := session.active.Profile.CredentialBinding; binding != nil {
+		providerRelease = binding.ProviderRelease
+	}
+	if providerRelease == "" || selected.ProviderRelease != providerRelease {
+		return errors.New("action provider release does not match the active task")
+	}
+	if err := a.checkTypedAction(session, selected.Operation, selected.Resource, selected.Environment, selected.Parameters); err != nil {
 		return err
 	}
 	action, err := control.ExecuteTypedAction(ctx, strings.TrimSpace(*actionID))
 	if err != nil {
 		return fmt.Errorf("execute typed action: %w", err)
+	}
+	if !session.owns(action) || action.ID != selected.ID {
+		return errors.New("execution response does not match the active session action; inspect the console before retrying")
 	}
 	return writeJSON(a.Out, action)
 }

@@ -54,6 +54,7 @@ type stubControl struct {
 	typedActions           []controlclient.TypedAction
 	typedActionRequest     controlclient.CreateTypedActionRequest
 	executedTypedActionID  string
+	listedActionSessionID  string
 	authorizationStart     controlclient.DeviceAuthorizationStart
 	authorizationExchanges []controlclient.DeviceAuthorizationExchange
 	authorizationPolls     int
@@ -130,7 +131,8 @@ func (s *stubControl) CreateTypedAction(_ context.Context, request controlclient
 	}
 	return s.typedActions[0], nil
 }
-func (s *stubControl) TypedActions(context.Context, string) ([]controlclient.TypedAction, error) {
+func (s *stubControl) TypedActions(_ context.Context, sessionID string) ([]controlclient.TypedAction, error) {
+	s.listedActionSessionID = sessionID
 	return s.typedActions, nil
 }
 func (s *stubControl) ExecuteTypedAction(_ context.Context, actionID string) (controlclient.TypedAction, error) {
@@ -959,7 +961,7 @@ func TestCredentialCommandsDiscoverAndManageProviderNeutralConnections(t *testin
 }
 
 func TestActionCommandsRemainProviderNeutralAndBindTheActiveSession(t *testing.T) {
-	now := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
 	control := enrolledStub()
 	seedEnrollment(t, root, control)
@@ -970,8 +972,9 @@ func TestActionCommandsRemainProviderNeutralAndBindTheActiveSession(t *testing.T
 				Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
 				ResourcePrefixes: []string{"orbital://station-9/"},
 			},
-			Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
-			AdapterRelease: "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+			Enforcement: domain.EnforcementTyped, CredentialMode: domain.CredentialAction,
+			ProviderBinding: &domain.ProviderBinding{ConnectionID: "connection-edge", ProviderRelease: "fixture.session@1"},
+			AdapterRelease:  "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
 		},
 		Session: domain.AgentSession{
 			ID: "session-edge", TenantID: "tenant-1", ProfileID: "profile-edge", ActorID: "actor-1",
@@ -983,15 +986,17 @@ func TestActionCommandsRemainProviderNeutralAndBindTheActiveSession(t *testing.T
 		t.Fatal(err)
 	}
 	active.Session.ProfileDigest = digest
+	seedActionPolicy(t, root, control, active, now, nil)
 	activePath, err := (localstate.Store{Root: root, FileTokens: true}).SaveActive(active)
 	if err != nil {
 		t.Fatal(err)
 	}
 	control.typedActions = []controlclient.TypedAction{{
 		ID: "typed-action-1", TenantID: "tenant-1", SessionID: active.Session.ID,
-		Provider: "orbital-fabric", AccountRef: "station-9", Environment: "production",
+		ProviderRelease: "fixture.session@1",
+		Provider:        "orbital-fabric", AccountRef: "station-9", Environment: "production",
 		CapabilityRef: "orbital.fabric.vector-shift@3.4.1", Operation: "ShiftVector",
-		Resource: "orbital://station-9/vector/red", Parameters: json.RawMessage(`{"bearing":17}`), State: "pending_approval",
+		Resource: "orbital://station-9/vector/red", Parameters: json.RawMessage(`{"bearing":17}`), State: "pending_approval", PolicyRelease: active.Profile.PolicyRelease,
 	}}
 	newApp := func(in io.Reader, out io.Writer) *App {
 		return &App{
