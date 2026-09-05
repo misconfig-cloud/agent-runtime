@@ -71,6 +71,41 @@ func (unfamiliarAdapter) Configure(request ConfigureRequest) ([]string, error) {
 	return SetEnvironment(request.BaseEnv, map[string]string{"ORBITAL_SESSION": request.Session.ID}), nil
 }
 
+type replacementAdapter struct {
+	kind  string
+	value string
+}
+
+func (a replacementAdapter) CredentialKind() string         { return a.kind }
+func (a replacementAdapter) SensitiveEnvironment() []string { return []string{"BROKER_TOKEN"} }
+func (a replacementAdapter) Configure(request ConfigureRequest) ([]string, error) {
+	return SetEnvironment(request.BaseEnv, map[string]string{"ADAPTER_VALUE": a.value}), nil
+}
+
+func TestAdmittedExternalAdapterReplacesSameKindWithoutHidingOtherDuplicates(t *testing.T) {
+	builtin := replacementAdapter{kind: "orbital.exec-token.v9", value: "builtin"}
+	external := replacementAdapter{kind: "orbital.exec-token.v9", value: "admitted-external"}
+	adapters, err := ReplaceAdapter([]Adapter{AWS{}, builtin}, external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(adapters...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := registry.Configure(external.kind, ConfigureRequest{BaseEnv: []string{"BROKER_TOKEN=ambient"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(environment, "\n")
+	if strings.Contains(joined, "BROKER_TOKEN") || !strings.Contains(joined, "ADAPTER_VALUE=admitted-external") || strings.Contains(joined, "ADAPTER_VALUE=builtin") {
+		t.Fatalf("admitted adapter did not replace the compiled adapter: %s", joined)
+	}
+	if _, err := NewRegistry(AWS{}, AWS{}); err == nil {
+		t.Fatal("ordinary duplicate adapters no longer fail closed")
+	}
+}
+
 func TestUnfamiliarRuntimeAdapterRequiresNoRegistryCoreChange(t *testing.T) {
 	registry, err := NewRegistry(AWS{}, unfamiliarAdapter{})
 	if err != nil {

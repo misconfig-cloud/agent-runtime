@@ -31,6 +31,28 @@ type Registry struct {
 	adapters map[string]Adapter
 }
 
+// ReplaceAdapter returns a new adapter set where replacement is the sole
+// implementation for its credential kind. Callers must use this only after an
+// external adapter release has passed admission and artifact verification.
+// NewRegistry continues to reject every other duplicate registration.
+func ReplaceAdapter(adapters []Adapter, replacement Adapter) ([]Adapter, error) {
+	if replacement == nil || strings.TrimSpace(replacement.CredentialKind()) == "" {
+		return nil, errors.New("replacement credential runtime adapter and kind are required")
+	}
+	kind := replacement.CredentialKind()
+	result := make([]Adapter, 0, len(adapters)+1)
+	for _, adapter := range adapters {
+		if adapter == nil || strings.TrimSpace(adapter.CredentialKind()) == "" {
+			return nil, errors.New("credential runtime adapter and kind are required")
+		}
+		if adapter.CredentialKind() == kind {
+			continue
+		}
+		result = append(result, adapter)
+	}
+	return append(result, replacement), nil
+}
+
 func NewRegistry(adapters ...Adapter) (*Registry, error) {
 	registry := &Registry{adapters: make(map[string]Adapter, len(adapters))}
 	for _, adapter := range adapters {

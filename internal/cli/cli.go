@@ -691,7 +691,10 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 			if stageErr != nil {
 				return a.stopAfterStart(control, session.ID, "credential renderer verification failed", stageErr)
 			}
-			adapters = append(adapters, credentialruntime.External{Provider: provider, RendererPath: rendererPath, RunRenderer: a.RunRenderer})
+			adapters, stageErr = credentialruntime.ReplaceAdapter(adapters, credentialruntime.External{Provider: provider, RendererPath: rendererPath, RunRenderer: a.RunRenderer})
+			if stageErr != nil {
+				return a.stopAfterStart(control, session.ID, "credential renderer composition failed", stageErr)
+			}
 		}
 		registry, registryErr := credentialruntime.NewRegistry(adapters...)
 		if registryErr != nil {
