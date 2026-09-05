@@ -20,8 +20,8 @@ misconfig doctor
 misconfig version
 ```
 
-`misconfig hook` is an internal native-adapter entry point. Do not invoke it
-manually.
+`misconfig hook` and `misconfig agent-tools` are internal native-adapter entry
+points. The launcher configures them; do not invoke them manually.
 
 ### Typed actions in the development runtime
 
@@ -35,10 +35,31 @@ and parameter limits. Execution still requires the control plane's action
 approval and execution-time checks. A successful tool invocation alone is not
 proof that the provider change succeeded; inspect its verification result.
 
-This source-level action path does **not** yet provide automatic typed-tool
-bootstrap inside the coding agent. Native hooks and the action CLI alone do
-not complete the guided task-to-agent workflow. These local checks are also
-not isolation from another process that can access the device credential.
+For typed-task profiles, this development runtime starts a session-bound MCP
+server with four tools: task context, propose, inspect actions and execute.
+Work definitions come from the selected provider release. Tool arguments cannot
+choose another session, provider release or operation. There is no approval
+tool. Each call rechecks the live session and signed policy.
+
+Codex must initialize the required server before starting. Native permission
+for its exact execution tool permits transport only: the tool checks current
+approval, and the control plane still enforces approval, scope, expiry and
+revocation at execution. Other MCP servers and shell commands receive no new
+permission. Hook-disable flags and a second argument terminator are rejected.
+Claude receives session-local MCP/settings files; authenticated Claude task
+acceptance remains open.
+
+The opt-in tests below use an installed authenticated Codex and model quota.
+Their control API and provider are simulated; passing them does not establish
+real infrastructure or public-release acceptance:
+
+```sh
+MISCONFIG_NATIVE_TASK_ACCEPTANCE=1 go test ./internal/cli \
+  -run '^TestLiveCodex(TaskProposal|ApprovedTaskTransport)$' -v -count=1 -timeout 6m
+```
+
+These local checks do not isolate the device credential or protect the laptop
+from another process. Do not claim unattended or filesystem/network isolation.
 
 ## Install a release
 
@@ -48,7 +69,7 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.4
+VERSION=0.1.11
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;

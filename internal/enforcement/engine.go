@@ -61,20 +61,27 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 		if persistErr != nil {
 			return Result{}, fmt.Errorf("persist native action identity: %w", persistErr)
 		}
-		action, decision = persisted.Action, persisted.Decision
+		action, decision = persisted.Action, stricterDecision(persisted.Decision, decision)
 		if recordErr := e.record(action, decision, spool.OutcomeBlocked, ""); recordErr != nil {
 			return Result{}, recordErr
 		}
 		return Result{Decision: decision, Action: action}, nil
 	}
 	decision := (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
+	if transportDecision, tool, ok := e.taskTransportDecision(active, signed.Bundle, input.ToolName); ok {
+		decision = transportDecision
+		action.Operation = "misconfig.task_transport." + tool
+		action.Resource = "misconfig://sessions/" + active.Session.ID
+		// This receipt is for transport access, not for a provider mutation.
+		action.Parameters = map[string]any{"hook_tool_use_id": input.ToolUseID}
+	}
 	persisted, err := e.Store.LoadOrSaveAction(active.Session.ID, hook.CorrelationKey(input), localstate.PendingAction{
 		Action: action, Decision: decision, InputDigest: inputDigest,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("persist native action identity: %w", err)
 	}
-	action, decision = persisted.Action, persisted.Decision
+	action, decision = persisted.Action, stricterDecision(persisted.Decision, decision)
 
 	outcome := spool.OutcomeBlocked
 	switch decision.Effect {
@@ -95,6 +102,41 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 		return Result{}, err
 	}
 	return Result{Decision: decision, Action: action}, nil
+}
+
+// Native retries retain their original action identity, not an obsolete allow
+// decision. Expiry, revocation or a new denial must still block the retry.
+func stricterDecision(previous, current policy.Decision) policy.Decision {
+	rank := map[policy.Effect]int{policy.EffectAllow: 1, policy.EffectApproval: 2, policy.EffectTyped: 3, policy.EffectDeny: 4, policy.EffectStop: 5}
+	if rank[current.Effect] >= rank[previous.Effect] {
+		return current
+	}
+	return previous
+}
+
+func (e Engine) taskTransportDecision(active localstate.ActiveSession, bundle policy.Bundle, toolName string) (policy.Decision, string, bool) {
+	binding, err := e.Store.LoadTaskBridge(active.Session.ID)
+	if err != nil {
+		return policy.Decision{}, "", false
+	}
+	tool, matched := binding.NativeTool(toolName)
+	if !matched {
+		return policy.Decision{}, "", false
+	}
+	decision := policy.Decision{Effect: policy.EffectDeny, RuleID: "misconfig.task_transport", Reason: "task transport binding is invalid or unavailable", PolicyRelease: bundle.Release}
+	digest, err := domain.Digest(active.Profile)
+	if err != nil || digest != active.Session.ProfileDigest || active.Session.State != domain.SessionRunning ||
+		active.Profile.Validate() != nil || active.Session.Validate() != nil || active.Profile.ID != active.Session.ProfileID || active.Profile.TenantID != active.Session.TenantID ||
+		bundle.ProfileID != active.Profile.ID || bundle.TenantID != active.Profile.TenantID || bundle.Release != active.Profile.PolicyRelease ||
+		binding.Validate(active.Session.ID, digest) != nil {
+		return decision, tool, true
+	}
+	// Only the exact launcher-owned server and fixed task tools use this path.
+	// The tool server independently authenticates/revalidates every request;
+	// broker execution remains the infrastructure authorization boundary.
+	decision.Effect = policy.EffectAllow
+	decision.Reason = "Task transport only; provider actions require separate policy, approval and verification checks"
+	return decision, tool, true
 }
 
 func (e Engine) Post(ctx context.Context, activePath string, input hook.Input) error {

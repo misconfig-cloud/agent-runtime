@@ -392,7 +392,7 @@ func TestNativeLaunchConfigurationIsSessionScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, " ")
-	if name != "codex" || !strings.Contains(joined, "hooks.PreToolUse") || !strings.Contains(joined, "hooks.PostToolUse") || !strings.Contains(joined, "hook pre --agent codex") {
+	if name != "codex" || !strings.Contains(joined, "hooks.PreToolUse") || !strings.Contains(joined, "hooks.PostToolUse") || !strings.Contains(joined, "hook pre --agent codex") || !strings.Contains(joined, "features.hooks=true") {
 		t.Fatalf("invalid Codex launch contract: %s %v", name, args)
 	}
 	if strings.LastIndex(joined, "hooks.PreToolUse") < strings.LastIndex(joined, "approval_policy=never") || strings.LastIndex(joined, "hooks.PostToolUse") < strings.LastIndex(joined, "approval_policy=never") {

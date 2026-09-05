@@ -79,6 +79,16 @@ type CredentialProvider struct {
 	RendererArtifacts     []RendererArtifact `json:"renderer_artifacts,omitempty"`
 	SensitiveEnvironment  []string           `json:"sensitive_environment,omitempty"`
 	AdmissionRequired     bool               `json:"admission_required"`
+	Actions               []ActionDescriptor `json:"actions,omitempty"`
+}
+
+type ActionDescriptor struct {
+	Ref              string          `json:"ref"`
+	Operation        string          `json:"operation"`
+	Title            string          `json:"title,omitempty"`
+	Description      string          `json:"description,omitempty"`
+	CapabilityDigest string          `json:"capability_digest"`
+	ParametersSchema json.RawMessage `json:"parameters_schema"`
 }
 
 type RendererArtifact struct {

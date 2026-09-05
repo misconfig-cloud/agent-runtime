@@ -28,6 +28,7 @@ import (
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
 	"github.com/misconfig-cloud/agent-runtime/internal/spool"
+	"github.com/misconfig-cloud/agent-runtime/internal/tasktransport"
 )
 
 const defaultControlURL = "https://sessions.misconfig.cloud"
@@ -124,6 +125,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.credential(ctx, args[1:])
 	case "action":
 		return a.action(ctx, args[1:])
+	case "agent-tools":
+		return a.agentTools(ctx, args[1:])
 	case "status":
 		return a.status(ctx, args[1:])
 	case "sync":
@@ -694,6 +697,11 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "runtime executable resolution failed", err)
 	}
+	if hasTypedWork(signed.Bundle) {
+		if err := a.prepareTaskBridge(ctx, store, config, control, activePath, active, executable); err != nil {
+			return a.stopAfterStart(control, session.ID, "task tool initialization failed", err)
+		}
+	}
 	commandName, commandArgs, err := a.nativeCommand(store, executable, session.ID, profile, agentArgs)
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "native adapter initialization failed", err)
@@ -850,6 +858,9 @@ func decodePublicKey(encoded string) (ed25519.PublicKey, error) {
 }
 
 func (a *App) nativeCommand(store localstate.Store, executable, sessionID string, profile domain.SessionProfile, extra []string) (string, []string, error) {
+	if err := validateNativeArguments(profile.Agent, extra); err != nil {
+		return "", nil, err
+	}
 	hookCommand := shellQuote(executable) + " hook"
 	switch profile.Agent {
 	case domain.AgentCodex:
@@ -864,9 +875,22 @@ func (a *App) nativeCommand(store localstate.Store, executable, sessionID string
 		// client to discard hooks parsed before the subcommand.
 		args = append(args, extra...)
 		args = append(args,
+			"-c", "features.hooks=true",
 			"-c", codexHookOverride("PreToolUse", pre, "Misconfig is checking policy"),
 			"-c", codexHookOverride("PostToolUse", post, "Misconfig is recording proof"),
 		)
+		if bridge, err := store.LoadTaskBridge(sessionID); err == nil {
+			if err := bridge.Validate(sessionID, mustProfileDigest(profile)); err != nil {
+				return "", nil, err
+			}
+			activePath := filepath.Join(store.Root, "sessions", sessionID+".json")
+			// Native permission is for this pinned transport, not a provider
+			// change. execute_action checks live approval locally and the broker
+			// consumes the exact approval with execution-time policy checks.
+			args = append(args, "-c", fmt.Sprintf("mcp_servers.%s={command=%s,args=[\"agent-tools\",\"--session\",%s],env={MISCONFIG_HOME=%s,MISCONFIG_ACTIVE_SESSION=%s},enabled=true,required=true,startup_timeout_sec=30,tool_timeout_sec=120,tools={execute_action={approval_mode=\"approve\"}}}", bridge.ServerName, strconv.Quote(executable), strconv.Quote(sessionID), strconv.Quote(store.Root), strconv.Quote(activePath)))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", nil, err
+		}
 		return "codex", args, nil
 	case domain.AgentClaude:
 		settings := map[string]any{"hooks": map[string]any{
@@ -878,10 +902,91 @@ func (a *App) nativeCommand(store localstate.Store, executable, sessionID string
 		if err != nil {
 			return "", nil, err
 		}
-		return "claude", append([]string{"--settings", path}, extra...), nil
+		args := append([]string(nil), extra...)
+		args = append(args, "--settings", path)
+		if bridge, err := store.LoadTaskBridge(sessionID); err == nil {
+			if err := bridge.Validate(sessionID, mustProfileDigest(profile)); err != nil {
+				return "", nil, err
+			}
+			config := map[string]any{"mcpServers": map[string]any{bridge.ServerName: map[string]any{"command": executable, "args": []string{"agent-tools", "--session", sessionID}, "env": map[string]string{"MISCONFIG_HOME": store.Root, "MISCONFIG_ACTIVE_SESSION": filepath.Join(store.Root, "sessions", sessionID+".json")}}}}
+			mcpPath, err := store.SaveRuntimeConfig(sessionID, "task-mcp.json", config)
+			if err != nil {
+				return "", nil, err
+			}
+			args = append(args, "--strict-mcp-config", "--mcp-config", mcpPath)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", nil, err
+		}
+		return "claude", args, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported agent %q", profile.Agent)
 	}
+}
+
+// A second argument terminator would turn our final configuration into prompt
+// text. Codex also processes --disable after -c, regardless of their order;
+// reject hook disable requests rather than pretending our override wins.
+func validateNativeArguments(agent domain.AgentKind, args []string) error {
+	for i, arg := range args {
+		if arg == "--" {
+			return errors.New("do not pass a second -- inside agent arguments; Misconfig must install its session controls")
+		}
+		if agent != domain.AgentCodex {
+			continue
+		}
+		value, disabling := strings.CutPrefix(arg, "--disable=")
+		if arg == "--disable" && i+1 < len(args) {
+			value, disabling = args[i+1], true
+		}
+		if disabling {
+			for _, feature := range strings.Split(value, ",") {
+				if feature = strings.TrimSpace(feature); feature == "hooks" || feature == "codex_hooks" {
+					return errors.New("Misconfig requires native hooks; remove the hook-disable argument")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func mustProfileDigest(profile domain.SessionProfile) string {
+	digest, _ := domain.Digest(profile)
+	return digest
+}
+
+func hasTypedWork(bundle policy.Bundle) bool {
+	for _, rule := range bundle.Rules {
+		if rule.Effect == policy.EffectTyped {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) prepareTaskBridge(ctx context.Context, store localstate.Store, config localstate.Config, control Control, activePath string, active localstate.ActiveSession, executable string) error {
+	child := *a
+	child.Getenv = func(key string) string {
+		if key == "MISCONFIG_ACTIVE_SESSION" {
+			return activePath
+		}
+		return a.Getenv(key)
+	}
+	session, err := child.loadActionSession(ctx, store, config, control)
+	if err != nil {
+		return err
+	}
+	if _, err := taskCapabilities(ctx, control, session); err != nil {
+		return err
+	}
+	digest, err := tasktransport.ExecutableDigest(executable)
+	if err != nil {
+		return err
+	}
+	id, err := domain.NewID("misconfig")
+	if err != nil {
+		return err
+	}
+	return store.SaveTaskBridge(tasktransport.Binding{SessionID: active.Session.ID, ProfileDigest: active.Session.ProfileDigest, ServerName: id, Executable: executable, ExecutableDigest: digest})
 }
 
 func nativeMatcher(command, status string) map[string]any {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
+	"github.com/misconfig-cloud/agent-runtime/internal/tasktransport"
 )
 
 type Config struct {
@@ -33,6 +34,17 @@ type PendingAction struct {
 	Action      domain.ActionEnvelope `json:"action"`
 	Decision    policy.Decision       `json:"decision"`
 	InputDigest string                `json:"input_digest"`
+}
+
+func (s Store) SaveTaskBridge(binding tasktransport.Binding) error {
+	_, err := s.SaveRuntimeConfig(binding.SessionID, "task-bridge.json", binding)
+	return err
+}
+
+func (s Store) LoadTaskBridge(sessionID string) (tasktransport.Binding, error) {
+	var binding tasktransport.Binding
+	err := readJSON(filepath.Join(s.Root, "runtime", safe(sessionID), "task-bridge.json"), &binding)
+	return binding, err
 }
 
 type Store struct {

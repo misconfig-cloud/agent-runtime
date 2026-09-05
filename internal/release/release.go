@@ -475,12 +475,12 @@ func compatibilityManifest(options Options) CompatibilityManifest {
 		Adapters: []AdapterCompatibility{
 			{
 				Agent: "codex", AdapterRelease: "codex@" + options.Version,
-				ClientProduct: "OpenAI Codex CLI", TestedClientVersions: []string{"0.152.0"},
+				ClientProduct: "OpenAI Codex CLI", TestedClientVersions: []string{"0.152.0", "0.153.4"},
 				HookEvents:         []string{"PreToolUse", "PostToolUse"},
 				ApprovalProjection: "require_approval is rendered as a synchronous deny with an external approval reason",
 				CompletionEvidence: "opaque shell output is observed, never independently verified",
-				Acceptance:         "direct_allow_deny_live_accepted",
-				Limitations:        []string{"nested and subagent live acceptance remains open"},
+				Acceptance:         "direct_allow_deny_and_source_typed_task_live_accepted",
+				Limitations:        []string{"typed task transport was live tested with Codex 0.153.4 against a browser-authored isolated Kubernetes canary; clean-host released-binary acceptance remains separate", "nested and subagent typed-task live acceptance remains open", "native hooks are not filesystem, credential, process or network isolation"},
 			},
 			{
 				Agent: "claude", AdapterRelease: "claude@" + options.Version,
