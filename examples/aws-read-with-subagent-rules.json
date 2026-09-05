@@ -8,7 +8,7 @@
       "tool.CollaborationwaitAgent",
       "tool.CollaborationlistAgents"
     ],
-    "resource_prefixes": ["arn:aws:"],
+    "resource_prefixes": ["aws://123456789012"],
     "reason": "allow governed delegation inside this session; child tools remain subject to the same policy"
   },
   {
@@ -16,7 +16,7 @@
     "effect": "allow",
     "providers": ["aws"],
     "operations": ["aws.sts.GetCallerIdentity", "aws.ec2.DescribeInstances"],
-    "resource_prefixes": ["arn:aws:"],
+    "resource_prefixes": ["aws://123456789012"],
     "reason": "approved read-only acceptance scope"
   }
 ]

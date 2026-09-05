@@ -4,7 +4,7 @@
     "effect": "allow",
     "providers": ["aws"],
     "operations": ["aws.sts.GetCallerIdentity"],
-    "resource_prefixes": ["arn:aws:"],
+    "resource_prefixes": ["aws://123456789012"],
     "reason": "approved read-only AWS identity check"
   }
 ]

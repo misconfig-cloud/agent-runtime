@@ -145,7 +145,7 @@ that decision is rendered as a deny; Claude renders it as its native `ask`.
   --provider aws \
   --account 123456789012 \
   --environment production \
-  --resource-prefix arn:aws: \
+  --resource-prefix aws://123456789012 \
   --enforcement hook_enforced \
   --credential-mode attach \
   --policy-ttl 300 \
@@ -161,7 +161,7 @@ Example rules file for an intentionally read-only acceptance session:
     "effect": "allow",
     "providers": ["aws"],
     "operations": ["aws.sts.GetCallerIdentity", "aws.ec2.DescribeInstances"],
-    "resource_prefixes": ["arn:aws:"],
+    "resource_prefixes": ["aws://123456789012"],
     "reason": "approved read-only acceptance scope"
   }
 ]
@@ -169,6 +169,11 @@ Example rules file for an intentionally read-only acceptance session:
 
 Unmatched actions fail closed. Deny and stop rules take precedence over allow
 rules.
+
+The account-bound `aws://ACCOUNT_ID` value is the provider-neutral scope used
+by the signed session contract. Do not use an ARN prefix for brokered AWS
+credentials. The admitted AWS adapter will reject a scope it cannot translate
+into an exact STS session policy before requesting credentials.
 
 Profiles are immutable. If a profile was signed by an older runtime contract,
 launch returns an explicit successor-required error instead of changing its
