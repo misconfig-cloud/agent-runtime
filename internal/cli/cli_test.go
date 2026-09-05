@@ -51,6 +51,9 @@ type stubControl struct {
 	credentialMaterial     controlclient.CredentialMaterial
 	credentialSessionID    string
 	credentialRequestID    string
+	typedActions           []controlclient.TypedAction
+	typedActionRequest     controlclient.CreateTypedActionRequest
+	executedTypedActionID  string
 	authorizationStart     controlclient.DeviceAuthorizationStart
 	authorizationExchanges []controlclient.DeviceAuthorizationExchange
 	authorizationPolls     int
@@ -119,6 +122,25 @@ func (s *stubControl) CredentialLease(_ context.Context, sessionID, requestID st
 		return controlclient.CredentialMaterial{}, errors.New("not implemented in stub")
 	}
 	return s.credentialMaterial, nil
+}
+func (s *stubControl) CreateTypedAction(_ context.Context, request controlclient.CreateTypedActionRequest) (controlclient.TypedAction, error) {
+	s.typedActionRequest = request
+	if len(s.typedActions) == 0 {
+		return controlclient.TypedAction{}, errors.New("not implemented in stub")
+	}
+	return s.typedActions[0], nil
+}
+func (s *stubControl) TypedActions(context.Context, string) ([]controlclient.TypedAction, error) {
+	return s.typedActions, nil
+}
+func (s *stubControl) ExecuteTypedAction(_ context.Context, actionID string) (controlclient.TypedAction, error) {
+	s.executedTypedActionID = actionID
+	for _, action := range s.typedActions {
+		if action.ID == actionID {
+			return action, nil
+		}
+	}
+	return controlclient.TypedAction{}, errors.New("not implemented in stub")
 }
 func (s *stubControl) StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error) {
 	if s.started.ID == "" {
@@ -908,6 +930,100 @@ func TestCredentialCommandsDiscoverAndManageProviderNeutralConnections(t *testin
 	}
 	if control.revokedConnectionID != "connection-a" || !strings.Contains(output.String(), "New leases are blocked") {
 		t.Fatalf("connection revoke = %q output=%s", control.revokedConnectionID, output.String())
+	}
+}
+
+func TestActionCommandsRemainProviderNeutralAndBindTheActiveSession(t *testing.T) {
+	now := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	control := enrolledStub()
+	seedEnrollment(t, root, control)
+	active := localstate.ActiveSession{
+		Profile: domain.SessionProfile{
+			ID: "profile-edge", TenantID: "tenant-1", Name: "Orbital production", Agent: domain.AgentCodex,
+			Workspace: "/workspace", Scope: domain.Scope{
+				Provider: "orbital-fabric", AccountRef: "station-9", Environments: []string{"production"},
+				ResourcePrefixes: []string{"orbital://station-9/"},
+			},
+			Enforcement: domain.EnforcementBrokered, CredentialMode: domain.CredentialBrokered,
+			AdapterRelease: "codex@1", PolicyRelease: "policy@1", CreatedAt: now,
+		},
+		Session: domain.AgentSession{
+			ID: "session-edge", TenantID: "tenant-1", ProfileID: "profile-edge", ActorID: "actor-1",
+			DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
+		},
+	}
+	digest, err := domain.Digest(active.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active.Session.ProfileDigest = digest
+	activePath, err := (localstate.Store{Root: root, FileTokens: true}).SaveActive(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control.typedActions = []controlclient.TypedAction{{
+		ID: "typed-action-1", TenantID: "tenant-1", SessionID: active.Session.ID,
+		Provider: "orbital-fabric", AccountRef: "station-9", Environment: "production",
+		CapabilityRef: "orbital.fabric.vector-shift@3.4.1", Operation: "ShiftVector",
+		Resource: "orbital://station-9/vector/red", Parameters: json.RawMessage(`{"bearing":17}`), State: "pending_approval",
+	}}
+	newApp := func(in io.Reader, out io.Writer) *App {
+		return &App{
+			In: in, Out: out, Err: io.Discard, StateRoot: root, FileTokens: true,
+			Getenv: func(key string) string {
+				if key == "MISCONFIG_ACTIVE_SESSION" {
+					return activePath
+				}
+				return ""
+			},
+			NewControl: func(_, _, _ string) Control { return control },
+		}
+	}
+
+	var output bytes.Buffer
+	if err := newApp(strings.NewReader(`{"bearing":17}`), &output).Run(context.Background(), []string{
+		"action", "propose", "--capability", "orbital.fabric.vector-shift@3.4.1",
+		"--operation", "ShiftVector", "--resource", "orbital://station-9/vector/red", "--parameters-file", "-",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := control.typedActionRequest
+	if request.SessionID != active.Session.ID || request.CapabilityRef != "orbital.fabric.vector-shift@3.4.1" ||
+		request.Operation != "ShiftVector" || request.Resource != "orbital://station-9/vector/red" ||
+		request.Environment != "production" || string(request.Parameters) != `{"bearing":17}` {
+		t.Fatalf("typed action lost its provider-neutral identity: %#v", request)
+	}
+	if !strings.Contains(output.String(), "typed-action-1") || !strings.Contains(output.String(), "pending_approval") {
+		t.Fatalf("proposed action output = %s", output.String())
+	}
+
+	output.Reset()
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"action", "list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "orbital.fabric.vector-shift@3.4.1") {
+		t.Fatalf("action list output = %s", output.String())
+	}
+
+	output.Reset()
+	if err := newApp(strings.NewReader(""), &output).Run(context.Background(), []string{"action", "execute", "typed-action-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if control.executedTypedActionID != "typed-action-1" || !strings.Contains(output.String(), "typed-action-1") {
+		t.Fatalf("approved action was not selected exactly: id=%q output=%s", control.executedTypedActionID, output.String())
+	}
+}
+
+func TestActionParametersRejectAnythingExceptABoundedJSONObject(t *testing.T) {
+	app := &App{In: strings.NewReader(`["not","an","object"]`)}
+	app.defaults()
+	if _, err := app.readActionParameters("-"); err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("array parameters were accepted: %v", err)
+	}
+	app.In = strings.NewReader(strings.Repeat("x", maximumActionParametersSize+1))
+	if _, err := app.readActionParameters("-"); err == nil || !strings.Contains(err.Error(), "64 KiB") {
+		t.Fatalf("oversized parameters were accepted: %v", err)
 	}
 }
 

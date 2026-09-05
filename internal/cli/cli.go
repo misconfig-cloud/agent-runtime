@@ -45,6 +45,9 @@ type Control interface {
 	VerifyCredentialConnection(context.Context, string) (controlclient.CredentialConnection, error)
 	RevokeCredentialConnection(context.Context, string) error
 	CredentialLease(context.Context, string, string) (controlclient.CredentialMaterial, error)
+	CreateTypedAction(context.Context, controlclient.CreateTypedActionRequest) (controlclient.TypedAction, error)
+	TypedActions(context.Context, string) ([]controlclient.TypedAction, error)
+	ExecuteTypedAction(context.Context, string) (controlclient.TypedAction, error)
 	StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error)
 	Session(context.Context, string) (domain.AgentSession, error)
 	Sessions(context.Context) ([]domain.AgentSession, error)
@@ -119,6 +122,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.runSession(ctx, args[1:])
 	case "credential":
 		return a.credential(ctx, args[1:])
+	case "action":
+		return a.action(ctx, args[1:])
 	case "status":
 		return a.status(ctx, args[1:])
 	case "sync":
@@ -1094,9 +1099,10 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|action|run|status|sync|uninstall>")
 	fmt.Fprintln(a.Err, "       misconfig profile <create|list|migrate>")
 	fmt.Fprintln(a.Err, "       misconfig credential <providers|connection>")
+	fmt.Fprintln(a.Err, "       misconfig action <propose|list|execute>")
 }
 
 func writeJSON(out io.Writer, value any) error {

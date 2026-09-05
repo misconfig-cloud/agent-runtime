@@ -324,6 +324,63 @@ func TestCredentialConnectionLifecycleUsesTenantBoundEndpoints(t *testing.T) {
 	}
 }
 
+func TestTypedActionLifecycleUsesProviderNeutralTenantBoundEndpoints(t *testing.T) {
+	now := time.Date(2026, 9, 5, 9, 30, 0, 0, time.UTC)
+	var proposed CreateTypedActionRequest
+	var requests []string
+	action := TypedAction{
+		ID: "action/orbital", TenantID: "tenant-a", SessionID: "session-edge", Provider: "orbital-fabric",
+		AccountRef: "station-9", Environment: "production", CapabilityRef: "orbital.vector-shift@1",
+		Operation: "ShiftVector", Resource: "orbital://station-9/vector/red", Parameters: json.RawMessage(`{"bearing":17}`),
+		State: "pending_approval", CreatedAt: now,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.RequestURI())
+		if r.Header.Get("Authorization") != "Bearer device-token" || r.Header.Get("X-Misconfig-Tenant") != "tenant-a" {
+			t.Fatalf("typed action request lost device or tenant identity: %#v", r.Header)
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/actions":
+			if err := json.NewDecoder(r.Body).Decode(&proposed); err != nil {
+				t.Fatal(err)
+			}
+			writeTestJSON(t, w, http.StatusCreated, action)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/actions":
+			if r.URL.Query().Get("session_id") != "session-edge" || r.URL.Query().Get("limit") != "100" {
+				t.Fatalf("action list query = %s", r.URL.RawQuery)
+			}
+			writeTestJSON(t, w, http.StatusOK, map[string]any{"actions": []TypedAction{action}})
+		case r.Method == http.MethodPost && r.URL.EscapedPath() == "/v1/actions/action%2Forbital/execute":
+			action.State = "verified"
+			writeTestJSON(t, w, http.StatusOK, action)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := Client{BaseURL: server.URL, TenantID: "tenant-a", Token: "device-token"}
+	request := CreateTypedActionRequest{
+		SessionID: "session-edge", CapabilityRef: action.CapabilityRef, Operation: action.Operation,
+		Resource: action.Resource, Environment: action.Environment, Parameters: action.Parameters,
+	}
+	created, err := client.CreateTypedAction(context.Background(), request)
+	if err != nil || created.ID != action.ID || proposed.CapabilityRef != action.CapabilityRef {
+		t.Fatalf("create action = %#v request=%#v err=%v", created, proposed, err)
+	}
+	listed, err := client.TypedActions(context.Background(), "session-edge")
+	if err != nil || len(listed) != 1 || listed[0].Provider != "orbital-fabric" {
+		t.Fatalf("list actions = %#v err=%v", listed, err)
+	}
+	executed, err := client.ExecuteTypedAction(context.Background(), action.ID)
+	if err != nil || executed.State != "verified" {
+		t.Fatalf("execute action = %#v err=%v", executed, err)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("unexpected typed action requests: %#v", requests)
+	}
+}
+
 func testProfile() domain.SessionProfile {
 	return domain.SessionProfile{
 		ID: "profile-a", TenantID: "tenant-a", Name: "Production", Agent: domain.AgentCodex,

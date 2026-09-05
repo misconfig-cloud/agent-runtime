@@ -121,6 +121,43 @@ type CredentialMaterial struct {
 	AuthorizationDigest string          `json:"authorization_digest"`
 }
 
+type TypedAction struct {
+	ID                  string          `json:"id"`
+	TenantID            string          `json:"tenant_id"`
+	SessionID           string          `json:"session_id"`
+	Provider            string          `json:"provider"`
+	ProviderRelease     string          `json:"provider_release"`
+	AccountRef          string          `json:"account_ref"`
+	Environment         string          `json:"environment"`
+	CapabilityRef       string          `json:"capability_ref"`
+	CapabilityDigest    string          `json:"capability_digest"`
+	Operation           string          `json:"operation"`
+	Resource            string          `json:"resource"`
+	Parameters          json.RawMessage `json:"parameters"`
+	ActionDigest        string          `json:"action_digest"`
+	RuleID              string          `json:"rule_id"`
+	PolicyRelease       string          `json:"policy_release"`
+	State               string          `json:"state"`
+	CreatedAt           time.Time       `json:"created_at"`
+	ApprovedBy          string          `json:"approved_by,omitempty"`
+	ApprovedAt          *time.Time      `json:"approved_at,omitempty"`
+	AuthorityExpiresAt  *time.Time      `json:"authority_expires_at,omitempty"`
+	AuthorityConsumedAt *time.Time      `json:"authority_consumed_at,omitempty"`
+	Execution           json.RawMessage `json:"execution,omitempty"`
+	Verification        json.RawMessage `json:"verification,omitempty"`
+	Failure             string          `json:"failure,omitempty"`
+	CompletedAt         *time.Time      `json:"completed_at,omitempty"`
+}
+
+type CreateTypedActionRequest struct {
+	SessionID     string          `json:"session_id"`
+	CapabilityRef string          `json:"capability_ref"`
+	Operation     string          `json:"operation"`
+	Resource      string          `json:"resource"`
+	Environment   string          `json:"environment"`
+	Parameters    json.RawMessage `json:"parameters"`
+}
+
 type CreateProfileSuccessorRequest struct {
 	AdapterRelease   string `json:"adapter_release"`
 	PolicyTTLSeconds int64  `json:"policy_ttl_seconds"`
@@ -228,6 +265,30 @@ func (c Client) RevokeCredentialConnection(ctx context.Context, connectionID str
 func (c Client) CredentialLease(ctx context.Context, sessionID, requestID string) (CredentialMaterial, error) {
 	var response CredentialMaterial
 	err := c.request(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/credential-leases", c.Token, c.TenantID, map[string]string{"request_id": requestID}, &response)
+	return response, err
+}
+
+func (c Client) CreateTypedAction(ctx context.Context, request CreateTypedActionRequest) (TypedAction, error) {
+	var response TypedAction
+	err := c.request(ctx, http.MethodPost, "/v1/actions", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) TypedActions(ctx context.Context, sessionID string) ([]TypedAction, error) {
+	path := "/v1/actions?limit=100"
+	if strings.TrimSpace(sessionID) != "" {
+		path += "&session_id=" + url.QueryEscape(sessionID)
+	}
+	var response struct {
+		Actions []TypedAction `json:"actions"`
+	}
+	err := c.request(ctx, http.MethodGet, path, c.Token, c.TenantID, nil, &response)
+	return response.Actions, err
+}
+
+func (c Client) ExecuteTypedAction(ctx context.Context, actionID string) (TypedAction, error) {
+	var response TypedAction
+	err := c.request(ctx, http.MethodPost, "/v1/actions/"+url.PathEscape(actionID)+"/execute", c.Token, c.TenantID, nil, &response)
 	return response, err
 }
 
