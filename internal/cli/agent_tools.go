@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
+
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
@@ -193,27 +195,32 @@ func taskCapabilities(ctx context.Context, control Control, session actionSessio
 	}
 	var result []controlclient.ActionDescriptor
 	operations := map[string]bool{}
+	references := map[string]bool{}
 	for _, provider := range providers {
 		if provider.Release != release || provider.Provider != session.active.Profile.Scope.Provider {
 			continue
 		}
 		for _, capability := range provider.Actions {
 			permitted := false
+			bound := true
 			for _, rule := range session.policy.Rules {
-				if rule.Effect == policy.EffectTyped && (len(rule.Providers) == 0 || slices.Contains(rule.Providers, provider.Provider)) && (len(rule.Operations) == 0 || slices.Contains(rule.Operations, capability.Operation)) {
+				if rule.Effect == policy.EffectTyped && (len(rule.Providers) == 0 || slices.Contains(rule.Providers, provider.Provider)) && (len(rule.Operations) == 0 || slices.Contains(rule.Operations, capability.Operation)) &&
+					provideradapter.MatchesCapabilities(provideradapter.CapabilitySelector{Ref: capability.Ref, Digest: capability.CapabilityDigest}, rule.Capabilities) {
 					permitted = true
+					bound = bound && rule.Capabilities != nil
 				}
 			}
 			if !permitted {
 				continue
 			}
-			if operations[capability.Operation] {
+			if previousBound, exists := operations[capability.Operation]; exists && (!previousBound || !bound) {
 				return nil, errors.New("task has ambiguous capability identity; choose separately identified work")
 			}
-			if capability.Ref == "" || capability.CapabilityDigest == "" || !json.Valid(capability.ParametersSchema) || len(capability.ParametersSchema) > 64<<10 {
+			if references[capability.Ref] || capability.Ref == "" || capability.CapabilityDigest == "" || !json.Valid(capability.ParametersSchema) || len(capability.ParametersSchema) > 64<<10 {
 				return nil, errors.New("task capability schema is unavailable")
 			}
-			operations[capability.Operation] = true
+			operations[capability.Operation] = bound
+			references[capability.Ref] = true
 			result = append(result, capability)
 		}
 	}

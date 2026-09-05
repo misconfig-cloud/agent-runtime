@@ -6,6 +6,8 @@ github.com/google/jsonschema-go v0.4.3 h1:/DBOLZTfDow7pe2GmaJNhltueGTtDKICi8V8p+
 github.com/google/jsonschema-go v0.4.3/go.mod h1:r5quNTdLOYEz95Ru18zA0ydNbBuYoo9tgaYcxEYhJVE=
 github.com/misconfig-cloud/provider-sdk v0.6.0 h1:I0x63bzZK1H5LgG2au8PIg/WSrVfXyio7UQC18kfCFw=
 github.com/misconfig-cloud/provider-sdk v0.6.0/go.mod h1:PXTmWUIC9qfQq3ABiz8T8gRyJVuRTyKi4TveKqgQVwA=
+github.com/misconfig-cloud/provider-sdk v0.8.0 h1:/zJMiFu9ndwCgElayX5dbPqCuhmmETkUw349tIfqKSU=
+github.com/misconfig-cloud/provider-sdk v0.8.0/go.mod h1:PXTmWUIC9qfQq3ABiz8T8gRyJVuRTyKi4TveKqgQVwA=
 github.com/modelcontextprotocol/go-sdk v1.7.0 h1:yqjY2dsbKAC0LSuWZVBMrHgiG8ukXv6NRo0JiALay44=
 github.com/modelcontextprotocol/go-sdk v1.7.0/go.mod h1:dL7u98E/zjJTGzEq+j30jQ8K2k1mb6LeAH4inEcSGts=
 github.com/segmentio/asm v1.1.3 h1:WM03sfUOENvvKexOLp+pCqgb/WDjsi7EK8gIsICtzhc=

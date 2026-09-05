@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
+
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
@@ -69,7 +71,11 @@ func (a *App) proposeAction(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.checkTypedAction(session, strings.TrimSpace(*operation), strings.TrimSpace(*resource), selectedEnvironment, parameters); err != nil {
+	selectedCapability, err := session.proposalCapability(ctx, control, strings.TrimSpace(*capability))
+	if err != nil {
+		return err
+	}
+	if err := a.checkTypedAction(session, strings.TrimSpace(*operation), strings.TrimSpace(*resource), selectedEnvironment, selectedCapability, parameters); err != nil {
 		return err
 	}
 	action, err := control.CreateTypedAction(ctx, controlclient.CreateTypedActionRequest{
@@ -165,7 +171,7 @@ func (a *App) executeAction(ctx context.Context, args []string) error {
 	if providerRelease == "" || selected.ProviderRelease != providerRelease {
 		return errors.New("action provider release does not match the active task")
 	}
-	if err := a.checkTypedAction(session, selected.Operation, selected.Resource, selected.Environment, selected.Parameters); err != nil {
+	if err := a.checkTypedAction(session, selected.Operation, selected.Resource, selected.Environment, provideradapter.CapabilitySelector{Ref: selected.CapabilityRef, Digest: selected.CapabilityDigest}, selected.Parameters); err != nil {
 		return err
 	}
 	action, err := control.ExecuteTypedAction(ctx, strings.TrimSpace(*actionID))

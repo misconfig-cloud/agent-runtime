@@ -295,7 +295,7 @@ func credentialAuthorizationDigest(store localstate.Store, config localstate.Con
 	for _, rule := range signed.Bundle.Rules {
 		rules = append(rules, provideradapter.AuthorizationRule{
 			ID: rule.ID, Effect: string(rule.Effect), Providers: rule.Providers,
-			Operations: rule.Operations, ResourcePrefixes: rule.ResourcePrefixes,
+			Operations: rule.Operations, Capabilities: rule.Capabilities, ResourcePrefixes: rule.ResourcePrefixes,
 			ResourceIDs: rule.ResourceIDs, ParameterLimits: rule.ParameterLimits,
 		})
 	}

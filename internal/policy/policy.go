@@ -28,14 +28,15 @@ const (
 )
 
 type Rule struct {
-	ID               string                           `json:"id"`
-	Effect           Effect                           `json:"effect"`
-	Providers        []string                         `json:"providers,omitempty"`
-	Operations       []string                         `json:"operations,omitempty"`
-	ResourcePrefixes []string                         `json:"resource_prefixes,omitempty"`
-	ResourceIDs      []string                         `json:"resource_ids,omitempty"`
-	ParameterLimits  *provideradapter.ParameterLimits `json:"parameter_limits,omitempty"`
-	Reason           string                           `json:"reason"`
+	ID               string                               `json:"id"`
+	Effect           Effect                               `json:"effect"`
+	Providers        []string                             `json:"providers,omitempty"`
+	Operations       []string                             `json:"operations,omitempty"`
+	Capabilities     []provideradapter.CapabilitySelector `json:"capabilities,omitempty"`
+	ResourcePrefixes []string                             `json:"resource_prefixes,omitempty"`
+	ResourceIDs      []string                             `json:"resource_ids,omitempty"`
+	ParameterLimits  *provideradapter.ParameterLimits     `json:"parameter_limits,omitempty"`
+	Reason           string                               `json:"reason"`
 }
 
 type Bundle struct {
@@ -76,6 +77,9 @@ func (b Bundle) Validate(now time.Time) error {
 		return errors.New("at least one policy rule is required")
 	}
 	for _, rule := range b.Rules {
+		if err := provideradapter.ValidateCapabilitySelection(rule.Capabilities); err != nil {
+			return err
+		}
 		if err := provideradapter.ValidateResourceSelection(rule.ResourcePrefixes, rule.ResourceIDs); err != nil {
 			return err
 		}
@@ -205,8 +209,13 @@ func (e Evaluator) Evaluate(profile domain.SessionProfile, session domain.AgentS
 }
 
 func matches(rule Rule, action domain.ActionEnvelope) bool {
+	var capability provideradapter.CapabilitySelector
+	if action.Capability != nil {
+		capability = *action.Capability
+	}
 	return memberOrAny(rule.Providers, action.Destination.Provider) &&
 		memberOrAny(rule.Operations, action.Operation) &&
+		provideradapter.MatchesCapabilities(capability, rule.Capabilities) &&
 		provideradapter.MatchesResources(action.Resource, rule.ResourcePrefixes, rule.ResourceIDs)
 }
 

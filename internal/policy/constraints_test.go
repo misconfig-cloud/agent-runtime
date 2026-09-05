@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +92,61 @@ func TestRemovingUnknownConstraintsInvalidatesSignedPolicy(t *testing.T) {
 	signed.Bundle = stripped
 	if err := Verify(signed, public, time.Now().UTC()); err == nil {
 		t.Fatal("downgraded policy retained authority")
+	}
+}
+
+func TestCapabilityOnlyConstraintCannotBeStrippedFromSignedPolicy(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, bundle := fixture(t)
+	bundle.Rules[0].Capabilities = []provideradapter.CapabilitySelector{{Ref: "fixture.adjust@1", Digest: "sha256:" + strings.Repeat("a", 64)}}
+	signed, err := Sign(bundle, "test", private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(signed, public, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	// v0.1.12 understands exact resources and parameters, but not capabilities.
+	// Removing only this field must still invalidate the signature.
+	signed.Bundle.Rules[0].Capabilities = nil
+	if err := Verify(signed, public, time.Now().UTC()); err == nil {
+		t.Fatal("capability-only constraint was silently downgraded")
+	}
+}
+
+func TestCapabilityLimitsDoNotCrossBetweenImplementations(t *testing.T) {
+	a := provideradapter.CapabilitySelector{Ref: "fixture.first@1", Digest: "sha256:" + strings.Repeat("a", 64)}
+	b := provideradapter.CapabilitySelector{Ref: "fixture.second@1", Digest: "sha256:" + strings.Repeat("b", 64)}
+	for _, tc := range []struct {
+		name       string
+		capability *provideradapter.CapabilitySelector
+		value      int
+		want       Effect
+	}{
+		{"first within ceiling", &a, 10, EffectTyped},
+		{"first cannot borrow second ceiling", &a, 11, EffectDeny},
+		{"second has its own ceiling", &b, 20, EffectTyped},
+		{"second exceeds ceiling", &b, 21, EffectDeny},
+		{"missing identity", nil, 1, EffectDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, active, action, bundle := fixture(t)
+			action.Capability, action.Parameters = tc.capability, map[string]any{"value": tc.value}
+			first, second := json.Number("10"), json.Number("20")
+			bundle.Rules = []Rule{
+				{ID: "first", Effect: EffectTyped, Operations: []string{action.Operation}, Capabilities: []provideradapter.CapabilitySelector{a}, Reason: "first selected implementation", ParameterLimits: &provideradapter.ParameterLimits{Fields: map[string]provideradapter.ParameterLimit{"value": {Type: "integer", Maximum: &first}}}},
+				{ID: "second", Effect: EffectTyped, Operations: []string{action.Operation}, Capabilities: []provideradapter.CapabilitySelector{b}, Reason: "second selected implementation", ParameterLimits: &provideradapter.ParameterLimits{Fields: map[string]provideradapter.ParameterLimit{"value": {Type: "integer", Maximum: &second}}}},
+			}
+			if decision := (Evaluator{Bundle: bundle}).Evaluate(profile, active, action, time.Now().UTC()); decision.Effect != tc.want {
+				t.Fatalf("wrong capability ceiling: %#v", decision)
+			}
+			bundle.Rules = append(bundle.Rules, Rule{ID: "stop", Effect: EffectStop, Reason: "generic stop"})
+			if decision := (Evaluator{Bundle: bundle}).Evaluate(profile, active, action, time.Now().UTC()); decision.Effect != EffectStop {
+				t.Fatalf("capability selector masked stop: %#v", decision)
+			}
+		})
 	}
 }

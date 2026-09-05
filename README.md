@@ -23,19 +23,21 @@ misconfig version
 `misconfig hook` and `misconfig agent-tools` are internal native-adapter entry
 points. The launcher configures them; do not invoke them manually.
 
-### Typed actions in the development runtime
+### Typed actions
 
 `misconfig action propose`, `action list`, and `action execute` require an
 active session created by `misconfig run`. They verify the live session and
 current signed policy. Listing or executing another session's actions is not
 supported from this surface; inspect other sessions in the console.
 
-Proposals and executions must satisfy the session's exact resource selection
-and parameter limits. Execution still requires the control plane's action
+Proposals and executions must satisfy the session's exact resource selection,
+parameter limits and selected capability identity. Capability-bound rules pin
+both the reference and implementation digest, so two implementations with the
+same operation are not interchangeable. Execution still requires the control plane's action
 approval and execution-time checks. A successful tool invocation alone is not
 proof that the provider change succeeded; inspect its verification result.
 
-For typed-task profiles, this development runtime starts a session-bound MCP
+For typed-task profiles, the runtime starts a session-bound MCP
 server with four tools: task context, propose, inspect actions and execute.
 Work definitions come from the selected provider release. Tool arguments cannot
 choose another session, provider release or operation. There is no approval
@@ -69,7 +71,7 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.11
+VERSION=0.1.13
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;

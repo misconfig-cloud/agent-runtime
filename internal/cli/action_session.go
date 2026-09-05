@@ -73,7 +73,7 @@ func (s actionSession) owns(action controlclient.TypedAction) bool {
 	return action.TenantID == s.active.Session.TenantID && action.SessionID == s.active.Session.ID
 }
 
-func (a *App) checkTypedAction(s actionSession, operation, resource, environment string, parameters json.RawMessage) error {
+func (a *App) checkTypedAction(s actionSession, operation, resource, environment string, capability provideradapter.CapabilitySelector, parameters json.RawMessage) error {
 	var object map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(parameters))
 	decoder.UseNumber()
@@ -85,10 +85,15 @@ func (a *App) checkTypedAction(s actionSession, operation, resource, environment
 		return err
 	}
 	active := s.active
+	var selected *provideradapter.CapabilitySelector
+	if capability.Digest != "" {
+		selected = &capability
+	}
 	decision := (policy.Evaluator{Bundle: s.policy}).Evaluate(active.Profile, active.Session, domain.ActionEnvelope{
 		ID: id, TenantID: active.Session.TenantID, ActorID: active.Session.ActorID,
 		DeviceID: active.Session.DeviceID, SessionID: active.Session.ID, Agent: active.Profile.Agent,
 		AdapterRelease: active.Profile.AdapterRelease, Tool: "misconfig.action", Operation: operation, Resource: resource,
+		Capability:  selected,
 		Destination: domain.Destination{Provider: active.Profile.Scope.Provider, AccountRef: active.Profile.Scope.AccountRef, Environment: environment},
 		Parameters:  object, RequestedAt: a.Now(),
 	}, a.Now())
@@ -102,12 +107,36 @@ func (a *App) checkTypedAction(s actionSession, operation, resource, environment
 	rules := make([]provideradapter.AuthorizationRule, 0, len(s.policy.Rules))
 	for _, rule := range s.policy.Rules {
 		rules = append(rules, provideradapter.AuthorizationRule{
-			Providers: rule.Providers, Operations: rule.Operations, ResourcePrefixes: rule.ResourcePrefixes,
+			Providers: rule.Providers, Operations: rule.Operations, Capabilities: rule.Capabilities, ResourcePrefixes: rule.ResourcePrefixes,
 			ResourceIDs: rule.ResourceIDs, ParameterLimits: rule.ParameterLimits,
 		})
 	}
-	if !provideradapter.ParametersWithinRules(rules, active.Profile.Scope.Provider, operation, resource, parameters) {
+	if !provideradapter.ParametersWithinCapabilityRules(rules, active.Profile.Scope.Provider, operation, resource, capability, parameters) {
 		return errors.New("action parameters exceed the task limits or contain ambiguous JSON")
 	}
 	return nil
+}
+
+// Resolve proposal identity from the verified signed rules, never from a
+// caller-supplied digest. The broker independently resolves the exact release.
+// Legacy operation-only policies have no capability ceiling and retain their
+// previous meaning; a capability-bound task never falls back to that meaning.
+func (s actionSession) proposalCapability(ctx context.Context, control Control, ref string) (provideradapter.CapabilitySelector, error) {
+	constrained := false
+	for _, rule := range s.policy.Rules {
+		constrained = constrained || rule.Capabilities != nil
+	}
+	if !constrained {
+		return provideradapter.CapabilitySelector{Ref: ref}, nil
+	}
+	capabilities, err := taskCapabilities(ctx, control, s)
+	if err != nil {
+		return provideradapter.CapabilitySelector{}, err
+	}
+	for _, capability := range capabilities {
+		if capability.Ref == ref {
+			return provideradapter.CapabilitySelector{Ref: ref, Digest: capability.CapabilityDigest}, nil
+		}
+	}
+	return provideradapter.CapabilitySelector{}, errors.New("capability was not selected for this task")
 }

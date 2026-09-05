@@ -236,23 +236,29 @@ type NativeActionIdentity struct {
 }
 
 type ActionEnvelope struct {
-	ID             string                 `json:"id"`
-	TenantID       string                 `json:"tenant_id"`
-	ActorID        string                 `json:"actor_id"`
-	DeviceID       string                 `json:"device_id"`
-	SessionID      string                 `json:"session_id"`
-	Agent          AgentKind              `json:"agent"`
-	AdapterRelease string                 `json:"adapter_release"`
-	Tool           string                 `json:"tool"`
-	Operation      string                 `json:"operation"`
-	Resource       string                 `json:"resource"`
-	Destination    Destination            `json:"destination"`
-	Native         NativeActionIdentity   `json:"native,omitempty"`
-	Parameters     map[string]interface{} `json:"parameters,omitempty"`
-	RequestedAt    time.Time              `json:"requested_at"`
+	ID             string                              `json:"id"`
+	TenantID       string                              `json:"tenant_id"`
+	ActorID        string                              `json:"actor_id"`
+	DeviceID       string                              `json:"device_id"`
+	SessionID      string                              `json:"session_id"`
+	Agent          AgentKind                           `json:"agent"`
+	AdapterRelease string                              `json:"adapter_release"`
+	Tool           string                              `json:"tool"`
+	Operation      string                              `json:"operation"`
+	Capability     *provideradapter.CapabilitySelector `json:"capability,omitempty"`
+	Resource       string                              `json:"resource"`
+	Destination    Destination                         `json:"destination"`
+	Native         NativeActionIdentity                `json:"native,omitempty"`
+	Parameters     map[string]interface{}              `json:"parameters,omitempty"`
+	RequestedAt    time.Time                           `json:"requested_at"`
 }
 
 func (a ActionEnvelope) Validate() error {
+	if a.Capability != nil {
+		if err := a.Capability.Validate(); err != nil {
+			return err
+		}
+	}
 	for label, value := range map[string]string{
 		"id": a.ID, "tenant_id": a.TenantID, "actor_id": a.ActorID,
 		"device_id": a.DeviceID, "session_id": a.SessionID,
