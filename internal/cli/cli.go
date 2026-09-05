@@ -670,6 +670,11 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "local state initialization failed", err)
 	}
+	defer func() {
+		if cleanupErr := store.RemoveRuntime(session.ID); cleanupErr != nil {
+			fmt.Fprintf(a.Err, "misconfig session cleanup warning: %v\n", cleanupErr)
+		}
+	}()
 	signed, err := control.Policy(ctx, session.ID)
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "initial policy fetch failed", err)

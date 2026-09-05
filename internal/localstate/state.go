@@ -203,6 +203,16 @@ func (s Store) RuntimeDirectory(sessionID string) string {
 	return filepath.Join(s.Root, "runtime", safe(sessionID))
 }
 
+// RemoveRuntime removes only the ephemeral files admitted for one governed
+// session. Durable receipts, the signed policy cache, and the session record
+// remain available for proof and replay.
+func (s Store) RemoveRuntime(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return errors.New("session ID is required")
+	}
+	return os.RemoveAll(s.RuntimeDirectory(sessionID))
+}
+
 func (s Store) PolicyPath(sessionID string) string {
 	return filepath.Join(s.Root, "policies", safe(sessionID)+".json")
 }

@@ -733,6 +733,9 @@ func TestRunDiscoversAndStagesAnAdmittedUnfamiliarCredentialRenderer(t *testing.
 	if len(control.stopped) != 1 || control.stopped[0] != session.ID {
 		t.Fatalf("external provider session was not stopped: %v", control.stopped)
 	}
+	if _, err := os.Stat((localstate.Store{Root: root, FileTokens: true}).RuntimeDirectory(session.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ephemeral renderer directory remains after session stop: %v", err)
+	}
 }
 
 func TestRunCancelsTheNativeAgentAfterRemoteStop(t *testing.T) {
