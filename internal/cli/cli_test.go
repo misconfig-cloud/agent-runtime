@@ -910,10 +910,9 @@ func TestCredentialCommandsDiscoverAndManageProviderNeutralConnections(t *testin
 }
 
 func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
-	now := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
 	control := enrolledStub()
-	seedEnrollment(t, root, control)
 	control.credentialProviders = []controlclient.CredentialProvider{{
 		Release: "orbital.session@3.7.1", Provider: "orbital-fabric", CredentialKind: "orbital.exec-token.v9",
 		MaximumTTLSeconds: 300, RevocationSemantics: "renewal-stops-token-expires",
@@ -931,14 +930,20 @@ func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
 			ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now,
 		},
 	}
+	profileDigest, err := domain.Digest(active.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active.Session.ProfileDigest = profileDigest
 	activePath, err := (localstate.Store{Root: root, FileTokens: true}).SaveActive(active)
 	if err != nil {
 		t.Fatal(err)
 	}
+	authorizationDigest := seedBrokeredAuthorization(t, root, control, active, now)
 	valid := controlclient.CredentialMaterial{
 		Kind: "orbital.exec-token.v9", Payload: json.RawMessage(`{"token":"opaque-provider-material"}`),
 		ExpiresAt: now.Add(4 * time.Minute), TargetIdentity: "orbital://station-9",
-		RevocationSemantics: "renewal-stops-token-expires",
+		RevocationSemantics: "renewal-stops-token-expires", AuthorizationDigest: authorizationDigest,
 	}
 	control.credentialMaterial = valid
 	var output bytes.Buffer
@@ -962,6 +967,9 @@ func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
 		{name: "ttl widened", mutate: func(material *controlclient.CredentialMaterial) { material.ExpiresAt = now.Add(10 * time.Minute) }},
 		{name: "revocation drift", mutate: func(material *controlclient.CredentialMaterial) { material.RevocationSemantics = "never" }},
 		{name: "missing target", mutate: func(material *controlclient.CredentialMaterial) { material.TargetIdentity = "" }},
+		{name: "authorization substitution", mutate: func(material *controlclient.CredentialMaterial) {
+			material.AuthorizationDigest = "sha256:" + strings.Repeat("f", 64)
+		}},
 	}
 	for _, test := range invalid {
 		t.Run(test.name, func(t *testing.T) {
@@ -981,10 +989,9 @@ func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
 }
 
 func TestCredentialLeaseRendersAdmittedExternalMaterialAndRejectsIdentityDrift(t *testing.T) {
-	now := time.Date(2026, 9, 5, 9, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
 	control := enrolledStub()
-	seedEnrollment(t, root, control)
 	artifact := []byte("admitted-renderer")
 	artifactDigest := sha256.Sum256(artifact)
 	provider := controlclient.CredentialProvider{
@@ -1007,18 +1014,24 @@ func TestCredentialLeaseRendersAdmittedExternalMaterialAndRejectsIdentityDrift(t
 		},
 		Session: domain.AgentSession{ID: "session-edge", TenantID: "tenant-1", ProfileID: "profile-edge", ProfileDigest: "sha256:profile", ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now},
 	}
+	profileDigest, err := domain.Digest(active.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active.Session.ProfileDigest = profileDigest
 	store := localstate.Store{Root: root, FileTokens: true}
 	activePath, err := store.SaveActive(active)
 	if err != nil {
 		t.Fatal(err)
 	}
+	authorizationDigest := seedBrokeredAuthorization(t, root, control, active, now)
 	rendererPath, err := store.SaveRuntimeExecutable(active.Session.ID, "renderer-edge", artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	control.credentialMaterial = controlclient.CredentialMaterial{
 		Kind: provider.CredentialKind, Payload: json.RawMessage(`{"opaque":"never-print-this"}`), ExpiresAt: now.Add(2 * time.Minute),
-		TargetIdentity: "unfamiliar-edge://fabric-42", RevocationSemantics: provider.RevocationSemantics,
+		TargetIdentity: "unfamiliar-edge://fabric-42", RevocationSemantics: provider.RevocationSemantics, AuthorizationDigest: authorizationDigest,
 	}
 	var rendered provideradapter.RenderRequest
 	var output bytes.Buffer
@@ -1087,6 +1100,43 @@ func seedEnrollmentWithKey(t *testing.T, root string, control *stubControl, publ
 	if err := store.SaveConfig(localstate.Config{ControlURL: "https://control.test", TenantID: "tenant-1", ActorID: "actor-1", DeviceID: "device-1", PolicyKeyID: "key-1", PolicyPublicKey: publicKey}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func seedBrokeredAuthorization(t *testing.T, root string, control *stubControl, active localstate.ActiveSession, now time.Time) string {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedEnrollmentWithKey(t, root, control, base64.RawURLEncoding.EncodeToString(publicKey))
+	signed, err := policy.Sign(policy.Bundle{
+		Release: active.Profile.PolicyRelease, TenantID: active.Profile.TenantID, ProfileID: active.Profile.ID,
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		Rules: []policy.Rule{{
+			ID: "allow-brokered-read", Effect: policy.EffectAllow, Providers: []string{active.Profile.Scope.Provider},
+			Operations: []string{"tool.Inspect"}, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes, Reason: "bounded provider read",
+		}},
+	}, "key-1", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := localstate.Store{Root: root, FileTokens: true}
+	if err := (policy.Cache{Path: store.PolicyPath(active.Session.ID), PublicKey: publicKey, Now: func() time.Time { return now }}).Store(signed); err != nil {
+		t.Fatal(err)
+	}
+	rules := []provideradapter.AuthorizationRule{{
+		ID: "allow-brokered-read", Effect: string(policy.EffectAllow), Providers: []string{active.Profile.Scope.Provider},
+		Operations: []string{"tool.Inspect"}, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes,
+	}}
+	digest, err := provideradapter.AuthorizationDigest(provideradapter.Authorization{
+		ProfileDigest: active.Session.ProfileDigest, PolicyRelease: active.Profile.PolicyRelease,
+		Provider: active.Profile.Scope.Provider, AccountRef: active.Profile.Scope.AccountRef,
+		Environments: active.Profile.Scope.Environments, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes, Rules: rules,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
 func containsEnv(environment []string, prefix string) bool {

@@ -118,6 +118,7 @@ type CredentialMaterial struct {
 	ExpiresAt           time.Time       `json:"expires_at"`
 	TargetIdentity      string          `json:"target_identity"`
 	RevocationSemantics string          `json:"revocation_semantics"`
+	AuthorizationDigest string          `json:"authorization_digest"`
 }
 
 type CreateProfileSuccessorRequest struct {

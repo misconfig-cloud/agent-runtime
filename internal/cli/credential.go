@@ -11,10 +11,13 @@ import (
 	"strings"
 	"time"
 
+	provideradapter "github.com/misconfig-cloud/provider-sdk"
+
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
+	"github.com/misconfig-cloud/agent-runtime/internal/policy"
 )
 
 func (a *App) credential(ctx context.Context, args []string) error {
@@ -199,9 +202,13 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	if active.Session.State != domain.SessionRunning || active.Profile.CredentialMode != domain.CredentialBrokered || active.Profile.CredentialBinding == nil {
 		return errors.New("credential lease requires a running brokered session")
 	}
-	_, _, control, err := a.authenticated()
+	store, config, control, err := a.authenticated()
 	if err != nil {
 		return err
+	}
+	expectedAuthorizationDigest, err := credentialAuthorizationDigest(store, config, active, a.Now)
+	if err != nil {
+		return fmt.Errorf("verify credential authorization: %w", err)
 	}
 	providers, err := control.CredentialProviders(ctx)
 	if err != nil {
@@ -241,6 +248,7 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	maximumTTL := time.Duration(provider.MaximumTTLSeconds) * time.Second
 	if material.Kind != provider.CredentialKind || material.TargetIdentity == "" ||
 		material.RevocationSemantics != provider.RevocationSemantics ||
+		material.AuthorizationDigest != expectedAuthorizationDigest ||
 		!material.ExpiresAt.After(now) || maximumTTL <= 0 || material.ExpiresAt.After(now.Add(maximumTTL).Add(time.Second)) ||
 		len(material.Payload) == 0 || !json.Valid(material.Payload) {
 		return errors.New("control plane returned invalid credential material")
@@ -261,4 +269,39 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 		_, err = fmt.Fprintln(a.Out)
 	}
 	return err
+}
+
+func credentialAuthorizationDigest(store localstate.Store, config localstate.Config, active localstate.ActiveSession, now func() time.Time) (string, error) {
+	profileDigest, err := domain.Digest(active.Profile)
+	if err != nil {
+		return "", err
+	}
+	if profileDigest != active.Session.ProfileDigest {
+		return "", errors.New("active session profile digest does not match")
+	}
+	publicKey, err := decodePublicKey(config.PolicyPublicKey)
+	if err != nil {
+		return "", errors.New("enrollment policy key is invalid")
+	}
+	signed, err := (policy.Cache{Path: store.PolicyPath(active.Session.ID), PublicKey: publicKey, Now: now}).Load()
+	if err != nil {
+		return "", err
+	}
+	if signed.KeyID != config.PolicyKeyID || signed.Bundle.Release != active.Profile.PolicyRelease ||
+		signed.Bundle.TenantID != active.Profile.TenantID || signed.Bundle.ProfileID != active.Profile.ID {
+		return "", errors.New("signed policy identity does not match the active session")
+	}
+	rules := make([]provideradapter.AuthorizationRule, 0, len(signed.Bundle.Rules))
+	for _, rule := range signed.Bundle.Rules {
+		rules = append(rules, provideradapter.AuthorizationRule{
+			ID: rule.ID, Effect: string(rule.Effect), Providers: rule.Providers,
+			Operations: rule.Operations, ResourcePrefixes: rule.ResourcePrefixes,
+		})
+	}
+	return provideradapter.AuthorizationDigest(provideradapter.Authorization{
+		ProfileDigest: profileDigest, PolicyRelease: signed.Bundle.Release,
+		Provider: active.Profile.Scope.Provider, AccountRef: active.Profile.Scope.AccountRef,
+		Environments: active.Profile.Scope.Environments, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes,
+		Rules: rules,
+	})
 }
