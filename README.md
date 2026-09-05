@@ -234,6 +234,8 @@ rules; until that contract exists, an unknown adapter fails closed.
 
 Attach mode is a bypassable local guardrail. A process or user holding the same
 AWS or Kubernetes credential outside the governed agent can still act directly.
-The verified AWS credential-process adapter supports brokered sessions for its
-exact provider release. Typed execution remains a separate enforcement level,
-and attach-mode profiles must not be presented as credential-brokered.
+The compiled AWS renderer is not a released brokered provider: the control-plane
+prototype refuses issuance until an admitted AWS adapter can enforce and echo
+the complete signed authorization ceiling. Typed execution remains a separate
+enforcement level, and attach-mode profiles must not be presented as
+credential-brokered.
