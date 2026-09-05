@@ -34,6 +34,7 @@ type CredentialMode string
 const (
 	CredentialAttach   CredentialMode = "attach"
 	CredentialBrokered CredentialMode = "brokered"
+	CredentialAction   CredentialMode = "action_only"
 )
 
 type AgentKind string
@@ -66,6 +67,20 @@ type Scope struct {
 type CredentialBinding struct {
 	ConnectionID    string `json:"connection_id"`
 	ProviderRelease string `json:"provider_release"`
+}
+
+// ProviderBinding selects an immutable provider release for typed actions
+// without authorizing the local runtime to receive provider credentials.
+type ProviderBinding struct {
+	ConnectionID    string `json:"connection_id"`
+	ProviderRelease string `json:"provider_release"`
+}
+
+func (b ProviderBinding) Validate() error {
+	if strings.TrimSpace(b.ConnectionID) == "" || strings.TrimSpace(b.ProviderRelease) == "" {
+		return errors.New("provider connection and provider release are required")
+	}
+	return nil
 }
 
 func (b CredentialBinding) Validate() error {
@@ -103,6 +118,7 @@ type SessionProfile struct {
 	Enforcement       EnforcementLevel   `json:"enforcement"`
 	CredentialMode    CredentialMode     `json:"credential_mode"`
 	CredentialBinding *CredentialBinding `json:"credential_binding,omitempty"`
+	ProviderBinding   *ProviderBinding   `json:"provider_binding,omitempty"`
 	AdapterRelease    string             `json:"adapter_release"`
 	PolicyRelease     string             `json:"policy_release"`
 	CreatedAt         time.Time          `json:"created_at"`
@@ -121,20 +137,34 @@ func (p SessionProfile) Validate() error {
 	if p.Agent != AgentCodex && p.Agent != AgentClaude {
 		return fmt.Errorf("unsupported agent %q", p.Agent)
 	}
-	if p.CredentialMode != CredentialAttach && p.CredentialMode != CredentialBrokered {
+	if p.CredentialMode != CredentialAttach && p.CredentialMode != CredentialBrokered && p.CredentialMode != CredentialAction {
 		return fmt.Errorf("unsupported credential mode %q", p.CredentialMode)
 	}
 	if p.CredentialMode == CredentialAttach && p.Enforcement != EnforcementObserved && p.Enforcement != EnforcementHook {
 		return errors.New("attach credentials cannot claim brokered or verified enforcement")
 	}
-	if p.CredentialMode == CredentialAttach && p.CredentialBinding != nil {
-		return errors.New("attach credentials cannot bind a credential provider")
+	if p.CredentialMode == CredentialAttach && (p.CredentialBinding != nil || p.ProviderBinding != nil) {
+		return errors.New("attach mode cannot bind a provider connection")
 	}
 	if p.CredentialMode == CredentialBrokered {
 		if p.CredentialBinding == nil {
 			return errors.New("brokered credentials require an immutable provider binding")
 		}
 		if err := p.CredentialBinding.Validate(); err != nil {
+			return err
+		}
+		if p.ProviderBinding != nil {
+			return errors.New("brokered credentials cannot also use an action-only provider binding")
+		}
+	}
+	if p.CredentialMode == CredentialAction {
+		if p.Enforcement != EnforcementTyped {
+			return errors.New("action-only sessions require typed execution enforcement")
+		}
+		if p.CredentialBinding != nil || p.ProviderBinding == nil {
+			return errors.New("action-only sessions require only an immutable provider binding")
+		}
+		if err := p.ProviderBinding.Validate(); err != nil {
 			return err
 		}
 	}

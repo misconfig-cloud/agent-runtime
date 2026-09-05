@@ -431,6 +431,28 @@ func TestCreateProfileUsesSafeApprovalDefault(t *testing.T) {
 	}
 }
 
+func TestCreateActionOnlyProfileBindsProviderWithoutCredentials(t *testing.T) {
+	root := t.TempDir()
+	workspace := t.TempDir()
+	control := enrolledStub()
+	control.profiles = []domain.SessionProfile{{ID: "profile-action", Name: "edge actions", Agent: domain.AgentClaude}}
+	seedEnrollment(t, root, control)
+	app := &App{Out: io.Discard, Err: io.Discard, StateRoot: root, FileTokens: true, Version: "1.2.3", NewControl: func(_, _, _ string) Control { return control }}
+	err := app.Run(context.Background(), []string{
+		"profile", "create", "--name", "edge actions", "--agent", "claude", "--workspace", workspace,
+		"--provider", "unfamiliar-edge", "--account", "target-7", "--environment", "production",
+		"--credential-mode", "action_only", "--provider-connection", "connection-edge", "--provider-release", "edge.actions@1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control.created.CredentialBinding != nil || control.created.ProviderBinding == nil ||
+		control.created.ProviderBinding.ConnectionID != "connection-edge" || control.created.ProviderBinding.ProviderRelease != "edge.actions@1" ||
+		control.created.Enforcement != domain.EnforcementTyped {
+		t.Fatalf("action-only provider binding was not preserved: %#v", control.created)
+	}
+}
+
 func TestProfileMigrationExplicitlyCreatesANewRuntimeSuccessor(t *testing.T) {
 	root := t.TempDir()
 	legacy := domain.SessionProfile{ID: "profile-legacy", Name: "production", Agent: domain.AgentCodex}

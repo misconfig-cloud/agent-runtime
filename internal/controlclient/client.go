@@ -58,6 +58,7 @@ type CreateProfileRequest struct {
 	Enforcement       domain.EnforcementLevel   `json:"enforcement"`
 	CredentialMode    domain.CredentialMode     `json:"credential_mode"`
 	CredentialBinding *domain.CredentialBinding `json:"credential_binding,omitempty"`
+	ProviderBinding   *domain.ProviderBinding   `json:"provider_binding,omitempty"`
 	AdapterRelease    string                    `json:"adapter_release"`
 	Rules             []policy.Rule             `json:"rules"`
 	PolicyTTLSeconds  int64                     `json:"policy_ttl_seconds"`

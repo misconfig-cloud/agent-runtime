@@ -482,6 +482,8 @@ func (a *App) createProfile(ctx context.Context, args []string) error {
 	credentialMode := flags.String("credential-mode", string(domain.CredentialAttach), "credential mode")
 	credentialConnection := flags.String("credential-connection", "", "verified credential connection ID")
 	credentialProviderRelease := flags.String("credential-provider-release", "", "immutable credential provider release")
+	providerConnection := flags.String("provider-connection", "", "verified action provider connection ID")
+	providerRelease := flags.String("provider-release", "", "immutable action provider release")
 	rulesPath := flags.String("rules", "", "JSON policy rules")
 	ttl := flags.Int64("policy-ttl", 300, "signed policy TTL in seconds")
 	var environments stringsFlag
@@ -531,7 +533,9 @@ func (a *App) createProfile(ctx context.Context, args []string) error {
 		return err
 	}
 	var credentialBinding *domain.CredentialBinding
-	if domain.CredentialMode(*credentialMode) == domain.CredentialBrokered {
+	var providerBinding *domain.ProviderBinding
+	mode := domain.CredentialMode(*credentialMode)
+	if mode == domain.CredentialBrokered {
 		credentialBinding = &domain.CredentialBinding{ConnectionID: strings.TrimSpace(*credentialConnection), ProviderRelease: strings.TrimSpace(*credentialProviderRelease)}
 		if err := credentialBinding.Validate(); err != nil {
 			return exitError{code: 2, err: fmt.Errorf("invalid credential binding: %w", err)}
@@ -539,11 +543,20 @@ func (a *App) createProfile(ctx context.Context, args []string) error {
 	} else if strings.TrimSpace(*credentialConnection) != "" || strings.TrimSpace(*credentialProviderRelease) != "" {
 		return exitError{code: 2, err: errors.New("credential connection flags require --credential-mode brokered")}
 	}
+	if mode == domain.CredentialAction {
+		providerBinding = &domain.ProviderBinding{ConnectionID: strings.TrimSpace(*providerConnection), ProviderRelease: strings.TrimSpace(*providerRelease)}
+		if err := providerBinding.Validate(); err != nil {
+			return exitError{code: 2, err: fmt.Errorf("invalid action provider binding: %w", err)}
+		}
+		*enforcementLevel = string(domain.EnforcementTyped)
+	} else if strings.TrimSpace(*providerConnection) != "" || strings.TrimSpace(*providerRelease) != "" {
+		return exitError{code: 2, err: errors.New("provider connection flags require --credential-mode action_only")}
+	}
 	profile, digest, err := control.CreateProfile(ctx, controlclient.CreateProfileRequest{
 		Name: *name, Agent: *agent, Workspace: absoluteWorkspace, Scope: scope,
 		Enforcement: domain.EnforcementLevel(*enforcementLevel), CredentialMode: domain.CredentialMode(*credentialMode),
-		CredentialBinding: credentialBinding,
-		AdapterRelease:    string(agentKind) + "@" + a.Version, Rules: rules, PolicyTTLSeconds: *ttl,
+		CredentialBinding: credentialBinding, ProviderBinding: providerBinding,
+		AdapterRelease: string(agentKind) + "@" + a.Version, Rules: rules, PolicyTTLSeconds: *ttl,
 	})
 	if err != nil {
 		return fmt.Errorf("create profile: %w", err)

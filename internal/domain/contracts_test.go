@@ -40,6 +40,25 @@ func TestAttachModeRejectsCredentialBinding(t *testing.T) {
 	}
 }
 
+func TestActionOnlyProfileRequiresTypedProviderBinding(t *testing.T) {
+	profile := validProfile()
+	profile.CredentialMode = CredentialAction
+	profile.Enforcement = EnforcementTyped
+	profile.ProviderBinding = &ProviderBinding{ConnectionID: "connection-edge", ProviderRelease: "edge.actions@1"}
+	if err := profile.Validate(); err != nil {
+		t.Fatalf("action-only profile rejected: %v", err)
+	}
+	profile.CredentialBinding = &CredentialBinding{ConnectionID: "connection-edge", ProviderRelease: "edge.actions@1"}
+	if err := profile.Validate(); err == nil {
+		t.Fatal("action-only profile accepted a credential binding")
+	}
+	profile.CredentialBinding = nil
+	profile.Enforcement = EnforcementHook
+	if err := profile.Validate(); err == nil {
+		t.Fatal("action-only profile accepted hook-only enforcement")
+	}
+}
+
 func TestProfileCanonicalOrderMatchesControlPlaneDigestContract(t *testing.T) {
 	encoded, err := json.Marshal(validProfile())
 	if err != nil {
