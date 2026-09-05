@@ -397,7 +397,7 @@ func entryNames(entries []*tar.Header) []string {
 	return names
 }
 
-func TestInstallScriptDoesNotPutEnrollmentSecretOnArgv(t *testing.T) {
+func TestInstallScriptStartsBrowserPairingWithoutEnrollmentSecrets(t *testing.T) {
 	t.Parallel()
 	repository, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
@@ -408,10 +408,10 @@ func TestInstallScriptDoesNotPutEnrollmentSecretOnArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(encoded)
-	if !strings.Contains(content, "--token-file -") {
-		t.Fatal("installer does not direct enrollment through stdin")
+	if !strings.Contains(content, "setup --control https://console.misconfig.cloud") {
+		t.Fatal("installer does not direct customers to browser pairing")
 	}
-	if strings.Contains(content, "--token ") {
-		t.Fatal("installer documents a secret-bearing argv token")
+	if strings.Contains(content, "--token") || strings.Contains(content, "--tenant TENANT") {
+		t.Fatal("default installation requires an operator enrollment secret")
 	}
 }

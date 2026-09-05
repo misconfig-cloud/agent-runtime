@@ -100,5 +100,5 @@ fi
 rm -f -- "$backup_binary"
 
 echo "Installed $target_binary ($staged_version)"
-echo "Enroll without putting a secret in argv:"
-echo "  $target_binary setup --tenant TENANT --actor EMAIL --token-file -"
+echo "Pair this device in your browser:"
+echo "  $target_binary setup --control https://console.misconfig.cloud"

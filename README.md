@@ -84,7 +84,7 @@ Pair the device through the authenticated browser flow. The runtime previews
 every local change before it opens the one-time approval page:
 
 ```sh
-misconfig setup --control https://sessions.misconfig.cloud
+misconfig setup --control https://console.misconfig.cloud
 ```
 
 An operator-issued enrollment token remains available as a recovery path. Read
@@ -124,7 +124,7 @@ The default flow creates a short-lived code, opens the authenticated console,
 and waits for the signed-in tenant to approve the exact device:
 
 ```sh
-./bin/misconfig setup --control https://sessions.misconfig.cloud
+./bin/misconfig setup --control https://console.misconfig.cloud
 ```
 
 On macOS the returned device credential is stored in Keychain. Other current
