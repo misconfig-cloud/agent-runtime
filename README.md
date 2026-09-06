@@ -71,7 +71,7 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.13
+VERSION=0.1.14
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
