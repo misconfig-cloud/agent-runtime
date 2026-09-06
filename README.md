@@ -63,9 +63,9 @@ MISCONFIG_NATIVE_TASK_ACCEPTANCE=1 go test ./internal/cli \
 These local checks do not isolate the device credential or protect the laptop
 from another process. Do not claim unattended or filesystem/network isolation.
 
-## Reviewed job steps (development build)
+## Reviewed job steps
 
-The source runtime can launch a saved, reviewed job step without asking for
+Runtime v0.1.15 can launch a saved, reviewed job step without asking for
 profile or policy hashes:
 
 ```sh
@@ -88,8 +88,8 @@ misconfig job complete --job JOB_ID --step STEP
 
 This command does not restart the agent or repeat infrastructure work. Failed
 or remotely stopped runs do not automatically complete. There is one session
-attempt per step; this is not automatic retry of a failed job. Public v0.1.14
-does not include these commands. Job authoring UI, Jira import, PR delivery and
+attempt per step; this is not automatic retry of a failed job. Earlier releases
+do not include these commands. Job authoring UI, Jira import, PR delivery and
 host isolation remain separate acceptance work.
 
 ## Install a release
@@ -100,7 +100,7 @@ machine architecture. Verify the signed checksum manifest, verify only the
 archive you downloaded, then extract it:
 
 ```sh
-VERSION=0.1.14
+VERSION=0.1.15
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
@@ -116,7 +116,7 @@ curl --fail --location --remote-name "${BASE_URL}/checksums.txt.sigstore.json"
 
 cosign verify-blob \
   --bundle checksums.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/misconfig-cloud/agent-runtime/.github/workflows/release.yml@refs/tags/v[0-9]+\\.[0-9]+\\.[0-9]+$' \
+  --certificate-identity "https://github.com/misconfig-cloud/agent-runtime/.github/workflows/release.yml@refs/tags/v${VERSION}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 
