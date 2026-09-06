@@ -66,6 +66,9 @@ func (a *App) loadActionSession(ctx context.Context, store localstate.Store, con
 	if signed.Bundle.TenantID != config.TenantID || signed.Bundle.ProfileID != active.Profile.ID || signed.Bundle.Release != active.Profile.PolicyRelease {
 		return actionSession{}, errors.New("action policy does not belong to the active profile")
 	}
+	if err := verifyJobSession(ctx, control, config, active, signed); err != nil {
+		return actionSession{}, err
+	}
 	return actionSession{active: active, policy: signed.Bundle}, nil
 }
 
@@ -113,6 +116,22 @@ func (a *App) checkTypedAction(s actionSession, operation, resource, environment
 	}
 	if !provideradapter.ParametersWithinCapabilityRules(rules, active.Profile.Scope.Provider, operation, resource, capability, parameters) {
 		return errors.New("action parameters exceed the task limits or contain ambiguous JSON")
+	}
+	if active.Job != nil {
+		step, err := active.Job.Step(active.Session.TenantID)
+		if err != nil {
+			return err
+		}
+		digest, err := provideradapter.ActionDigest(capability.Digest, operation, resource, environment, parameters)
+		if err != nil {
+			return err
+		}
+		for _, expected := range step.ExpectedActionDigests {
+			if digest == expected {
+				return nil
+			}
+		}
+		return errors.New("action is not one of this job step's reviewed results")
 	}
 	return nil
 }

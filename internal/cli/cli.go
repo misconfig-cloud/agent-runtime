@@ -50,6 +50,10 @@ type Control interface {
 	TypedActions(context.Context, string) ([]controlclient.TypedAction, error)
 	ExecuteTypedAction(context.Context, string) (controlclient.TypedAction, error)
 	StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error)
+	Job(context.Context, string) (domain.JobDefinition, error)
+	JobProgress(context.Context, string) ([]domain.JobProgress, error)
+	StartJobSession(context.Context, domain.SessionProfile, domain.JobSelection) (domain.AgentSession, error)
+	CompleteJobStep(context.Context, domain.JobBinding) (domain.JobProgress, error)
 	Session(context.Context, string) (domain.AgentSession, error)
 	Sessions(context.Context) ([]domain.AgentSession, error)
 	Policy(context.Context, string) (policy.SignedBundle, error)
@@ -121,6 +125,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.profile(ctx, args[1:])
 	case "run":
 		return a.runSession(ctx, args[1:])
+	case "job":
+		return a.job(ctx, args[1:])
 	case "credential":
 		return a.credential(ctx, args[1:])
 	case "action":
@@ -635,11 +641,16 @@ func (a *App) listProfiles(ctx context.Context, args []string) error {
 func (a *App) runSession(ctx context.Context, args []string) error {
 	flags := a.flags("run")
 	profileReference := flags.String("profile", "", "profile name or ID")
+	jobID := flags.String("job", "", "reviewed job ID")
+	stepKey := flags.String("step", "", "reviewed job step key")
 	if err := flags.Parse(args); err != nil {
 		return exitError{code: 2, err: err}
 	}
 	agentArgs := flags.Args()
-	if *profileReference == "" {
+	if (*jobID == "") != (*stepKey == "") || (*jobID != "" && *profileReference != "") {
+		return exitError{code: 2, err: errors.New("use --job with --step, or --profile; do not combine them")}
+	}
+	if *profileReference == "" && *jobID == "" {
 		if len(agentArgs) == 0 {
 			return exitError{code: 2, err: errors.New("run requires --profile or a profile name")}
 		}
@@ -657,6 +668,20 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("list profiles: %w", err)
 	}
+	var selected *domain.JobSelection
+	if *jobID != "" {
+		d, err := control.Job(ctx, *jobID)
+		if err != nil {
+			return err
+		}
+		selected = &domain.JobSelection{Definition: d, StepKey: *stepKey}
+		step, err := selected.Step(config.TenantID)
+		if err != nil {
+			return err
+		}
+		*profileReference = step.ProfileID
+		fmt.Fprintf(a.Out, "Job: %s\nStep: %s\n", d.Document.Name, step.Name)
+	}
 	profile, err := selectProfile(profiles, *profileReference)
 	if err != nil {
 		return err
@@ -664,11 +689,16 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if _, err := a.LookPath(string(profile.Agent)); err != nil {
 		return fmt.Errorf("find %s executable: %w", profile.Agent, err)
 	}
-	session, err := control.StartSession(ctx, profile)
+	var session domain.AgentSession
+	if selected != nil {
+		session, err = control.StartJobSession(ctx, profile, *selected)
+	} else {
+		session, err = control.StartSession(ctx, profile)
+	}
 	if err != nil {
 		return fmt.Errorf("start governed session: %w", err)
 	}
-	active := localstate.ActiveSession{Profile: profile, Session: session}
+	active := localstate.ActiveSession{Profile: profile, Session: session, Job: selected}
 	activePath, err := store.SaveActive(active)
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "local state initialization failed", err)
@@ -688,6 +718,11 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	}
 	if signed.KeyID != config.PolicyKeyID {
 		return a.stopAfterStart(control, session.ID, "policy key mismatch", errors.New("policy signing key does not match enrollment"))
+	}
+	if selected != nil {
+		if err := verifyJobSession(ctx, control, config, active, signed); err != nil {
+			return a.stopAfterStart(control, session.ID, "job binding verification failed", err)
+		}
 	}
 	cache := policy.Cache{Path: store.PolicyPath(session.ID), PublicKey: publicKey, Now: a.Now}
 	if err := cache.Store(signed); err != nil {
@@ -782,6 +817,13 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Out, "Session %s was stopped remotely.\n", session.ID)
 	} else {
 		fmt.Fprintf(a.Out, "Session %s stopped.\n", session.ID)
+	}
+	if selected != nil && !remoteStopped {
+		completionCtx, cancelCompletion := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancelCompletion()
+		if err := a.completeSelectedJob(completionCtx, control, config, *selected, session.ID); err != nil {
+			return fmt.Errorf("session stopped; job step is not confirmed complete (retry with misconfig job complete --job %s --step %s): %w", *jobID, *stepKey, err)
+		}
 	}
 	return nil
 }
@@ -1222,7 +1264,9 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|action|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|action|job|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "       misconfig job <show|complete>")
+	fmt.Fprintln(a.Err, "       misconfig run --job JOB_ID --step STEP -- [agent arguments]")
 	fmt.Fprintln(a.Err, "       misconfig profile <create|list|migrate>")
 	fmt.Fprintln(a.Err, "       misconfig credential <providers|connection>")
 	fmt.Fprintln(a.Err, "       misconfig action <propose|list|execute>")

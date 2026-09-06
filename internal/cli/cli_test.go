@@ -29,6 +29,11 @@ import (
 )
 
 type stubControl struct {
+	jobDefinition          domain.JobDefinition
+	jobProgress            []domain.JobProgress
+	jobCompletion          domain.JobProgress
+	jobCompleted           int
+	jobStarted             *domain.JobSelection
 	enrollToken            string
 	enrollment             controlclient.Enrollment
 	profiles               []domain.SessionProfile
@@ -59,6 +64,24 @@ type stubControl struct {
 	authorizationStart     controlclient.DeviceAuthorizationStart
 	authorizationExchanges []controlclient.DeviceAuthorizationExchange
 	authorizationPolls     int
+}
+
+func (s *stubControl) Job(context.Context, string) (domain.JobDefinition, error) {
+	if s.jobDefinition.Document.ID == "" {
+		return domain.JobDefinition{}, errors.New("job not implemented in stub")
+	}
+	return s.jobDefinition, nil
+}
+func (s *stubControl) JobProgress(context.Context, string) ([]domain.JobProgress, error) {
+	return s.jobProgress, nil
+}
+func (s *stubControl) StartJobSession(_ context.Context, _ domain.SessionProfile, selected domain.JobSelection) (domain.AgentSession, error) {
+	s.jobStarted = &selected
+	return s.started, nil
+}
+func (s *stubControl) CompleteJobStep(context.Context, domain.JobBinding) (domain.JobProgress, error) {
+	s.jobCompleted++
+	return s.jobCompletion, nil
 }
 
 func (s *stubControl) Enroll(_ context.Context, token, _, _, _, _ string) (controlclient.Enrollment, error) {

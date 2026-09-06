@@ -28,6 +28,7 @@ type Config struct {
 type ActiveSession struct {
 	Profile domain.SessionProfile `json:"profile"`
 	Session domain.AgentSession   `json:"session"`
+	Job     *domain.JobSelection  `json:"job,omitempty"`
 }
 
 type PendingAction struct {

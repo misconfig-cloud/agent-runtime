@@ -176,7 +176,7 @@ func (a *App) executeAction(ctx context.Context, args []string) error {
 	}
 	action, err := control.ExecuteTypedAction(ctx, strings.TrimSpace(*actionID))
 	if err != nil {
-		return fmt.Errorf("execute typed action: %w", err)
+		return fmt.Errorf("execution result is not confirmed; inspect this action in the console before any further change, and do not repeat execution: %w", err)
 	}
 	if !session.owns(action) || action.ID != selected.ID {
 		return errors.New("execution response does not match the active session action; inspect the console before retrying")

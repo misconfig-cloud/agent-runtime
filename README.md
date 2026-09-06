@@ -65,6 +65,37 @@ from another process. Do not claim unattended or filesystem/network isolation.
 
 ## Install a release
 
+### Reviewed job steps (development build)
+
+The source runtime can launch a saved, reviewed job step without asking for
+profile or policy hashes:
+
+```sh
+misconfig job show JOB_ID
+misconfig run --job JOB_ID --step STEP -- [native agent arguments]
+```
+
+It loads the selected task, verifies the unchanged job/profile/policy and checks
+that the server bound the new session to that step before launching the agent.
+Each action must match the step's reviewed expected results as well as the
+existing task limits. An unsupported server cannot trigger standalone fallback.
+
+Normal agent exit stops the session, then asks the server to confirm every
+expected independently verified result. Agent text is not completion evidence.
+After an interrupted completion response, retry only the completion check:
+
+```sh
+misconfig job complete --job JOB_ID --step STEP
+```
+
+This command does not restart the agent or repeat infrastructure work. Failed
+or remotely stopped runs do not automatically complete. There is one session
+attempt per step; this is not automatic retry of a failed job. Public v0.1.14
+does not include these commands. Job authoring UI, Jira import, PR delivery and
+host isolation remain separate acceptance work.
+
+### Published download
+
 Release archives are self-contained. Installing one does not require Go, Git,
 or a source checkout. Select the archive matching macOS or Linux and the
 machine architecture. Verify the signed checksum manifest, verify only the

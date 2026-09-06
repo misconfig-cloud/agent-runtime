@@ -299,6 +299,12 @@ func (c Client) TypedActions(ctx context.Context, sessionID string) ([]TypedActi
 }
 
 func (c Client) ExecuteTypedAction(ctx context.Context, actionID string) (TypedAction, error) {
+	// Execution and independent verification each have a server-side dispatch
+	// ceiling of 55 seconds. A read-sized timeout can disconnect after authority
+	// is consumed but before its result arrives. Never retry this POST.
+	if c.HTTP == nil {
+		c.HTTP = &http.Client{Timeout: 115 * time.Second}
+	}
 	var response TypedAction
 	err := c.request(ctx, http.MethodPost, "/v1/actions/"+url.PathEscape(actionID)+"/execute", c.Token, c.TenantID, nil, &response)
 	return response, err
@@ -343,10 +349,12 @@ func (c Client) CreateProfileSuccessor(ctx context.Context, profileID string, re
 func (c Client) profileDefinition(ctx context.Context, profileID string) (struct {
 	Profile       domain.SessionProfile `json:"profile"`
 	ProfileDigest string                `json:"profile_digest"`
+	Policy        policy.SignedBundle   `json:"policy"`
 }, error) {
 	var response struct {
 		Profile       domain.SessionProfile `json:"profile"`
 		ProfileDigest string                `json:"profile_digest"`
+		Policy        policy.SignedBundle   `json:"policy"`
 	}
 	err := c.request(ctx, http.MethodGet, "/v1/session-profiles/"+url.PathEscape(profileID), c.Token, c.TenantID, nil, &response)
 	return response, err
