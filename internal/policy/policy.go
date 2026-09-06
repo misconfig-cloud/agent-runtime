@@ -40,12 +40,13 @@ type Rule struct {
 }
 
 type Bundle struct {
-	Release   string    `json:"release"`
-	TenantID  string    `json:"tenant_id"`
-	ProfileID string    `json:"profile_id"`
-	IssuedAt  time.Time `json:"issued_at"`
-	ExpiresAt time.Time `json:"expires_at"`
-	Rules     []Rule    `json:"rules"`
+	Release      string                        `json:"release"`
+	TenantID     string                        `json:"tenant_id"`
+	ProfileID    string                        `json:"profile_id"`
+	IssuedAt     time.Time                     `json:"issued_at"`
+	ExpiresAt    time.Time                     `json:"expires_at"`
+	Rules        []Rule                        `json:"rules"`
+	SimplePolicy *provideradapter.SimplePolicy `json:"simple_policy,omitempty"`
 }
 
 type SignedBundle struct {
@@ -62,6 +63,16 @@ type Decision struct {
 }
 
 func (b Bundle) Validate(now time.Time) error {
+	if b.SimplePolicy != nil {
+		if err := b.SimplePolicy.Validate(); err != nil {
+			return err
+		}
+		for _, rule := range b.Rules {
+			if rule.Effect != EffectDeny && rule.Effect != EffectStop && rule.Effect != EffectTyped {
+				return errors.New("simple policies require typed execution rules")
+			}
+		}
+	}
 	for label, value := range map[string]string{"release": b.Release, "tenant_id": b.TenantID, "profile_id": b.ProfileID} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", label)
@@ -151,6 +162,9 @@ func (e Evaluator) Evaluate(profile domain.SessionProfile, session domain.AgentS
 	}
 	if err := profile.Validate(); err != nil {
 		return fail("session profile is invalid")
+	}
+	if e.Bundle.SimplePolicy != nil && (string(profile.CredentialMode) != "action_only" || string(profile.Enforcement) != "typed_execution") {
+		return fail("simple policy requires server-assessed typed execution")
 	}
 	if err := session.Validate(); err != nil {
 		return fail("agent session is invalid")

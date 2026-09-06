@@ -2,7 +2,7 @@ module github.com/misconfig-cloud/agent-runtime
 
 go 1.25.0
 
-require github.com/misconfig-cloud/provider-sdk v0.8.0
+require github.com/misconfig-cloud/provider-sdk v0.10.1-0.20260906051941-7d73b083a36c
 
 require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
