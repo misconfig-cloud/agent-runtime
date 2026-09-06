@@ -63,9 +63,7 @@ MISCONFIG_NATIVE_TASK_ACCEPTANCE=1 go test ./internal/cli \
 These local checks do not isolate the device credential or protect the laptop
 from another process. Do not claim unattended or filesystem/network isolation.
 
-## Install a release
-
-### Reviewed job steps (development build)
+## Reviewed job steps (development build)
 
 The source runtime can launch a saved, reviewed job step without asking for
 profile or policy hashes:
@@ -94,7 +92,7 @@ attempt per step; this is not automatic retry of a failed job. Public v0.1.14
 does not include these commands. Job authoring UI, Jira import, PR delivery and
 host isolation remain separate acceptance work.
 
-### Published download
+## Install a release
 
 Release archives are self-contained. Installing one does not require Go, Git,
 or a source checkout. Select the archive matching macOS or Linux and the
