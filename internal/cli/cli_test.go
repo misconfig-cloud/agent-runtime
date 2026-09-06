@@ -49,6 +49,7 @@ type stubControl struct {
 	verifiedConnectionID   string
 	revokedConnectionID    string
 	credentialMaterial     controlclient.CredentialMaterial
+	credentialError        error
 	credentialSessionID    string
 	credentialRequestID    string
 	typedActions           []controlclient.TypedAction
@@ -119,6 +120,9 @@ func (s *stubControl) RevokeCredentialConnection(_ context.Context, connectionID
 func (s *stubControl) CredentialLease(_ context.Context, sessionID, requestID string) (controlclient.CredentialMaterial, error) {
 	s.credentialSessionID = sessionID
 	s.credentialRequestID = requestID
+	if s.credentialError != nil {
+		return controlclient.CredentialMaterial{}, s.credentialError
+	}
 	if s.credentialMaterial.Kind == "" {
 		return controlclient.CredentialMaterial{}, errors.New("not implemented in stub")
 	}
@@ -1134,6 +1138,23 @@ func TestCredentialLeaseValidatesPublishedProviderContract(t *testing.T) {
 			}
 		})
 	}
+	// A compatible/older server may return a lease within the release maximum
+	// but beyond this task. The signed local policy remains the ceiling.
+	seedBrokeredAuthorization(t, root, control, active, now, valid.ExpiresAt)
+	control.credentialMaterial = valid
+	output.Reset()
+	if err := app.Run(context.Background(), []string{"credential", "lease", "--active", activePath, "--kind", valid.Kind}); err != nil {
+		t.Fatalf("exact task expiry rejected: %v", err)
+	}
+	control.credentialMaterial.ExpiresAt = valid.ExpiresAt.Add(time.Nanosecond)
+	output.Reset()
+	if err := app.Run(context.Background(), []string{"credential", "lease", "--active", activePath, "--kind", valid.Kind}); err == nil || output.Len() != 0 {
+		t.Fatal("credential outliving signed task reached stdout")
+	}
+	control.credentialError = &controlclient.APIError{StatusCode: 409, Code: "credential_task_window_too_short"}
+	if err := app.Run(context.Background(), []string{"credential", "lease", "--active", activePath, "--kind", valid.Kind}); err == nil || !strings.Contains(err.Error(), "review and start a new task") || output.Len() != 0 {
+		t.Fatal("short-window refusal did not explain the next step safely")
+	}
 }
 
 func TestCredentialLeaseRendersAdmittedExternalMaterialAndRejectsIdentityDrift(t *testing.T) {
@@ -1222,6 +1243,15 @@ func TestCredentialLeaseRendersAdmittedExternalMaterialAndRejectsIdentityDrift(t
 	if control.credentialSessionID != "" || rejected.Len() != 0 {
 		t.Fatalf("credential was issued before identity rejection: session=%q output=%q", control.credentialSessionID, rejected.String())
 	}
+	seedBrokeredAuthorization(t, root, control, active, now, control.credentialMaterial.ExpiresAt)
+	render := app.RunRenderer
+	app.RunRenderer = func(ctx context.Context, path, operation string, input []byte) ([]byte, error) {
+		now = now.Add(2 * time.Minute)
+		return render(ctx, path, operation, input)
+	}
+	if err := app.Run(context.Background(), args); err == nil || rejected.Len() != 0 {
+		t.Fatal("material expired during rendering reached stdout")
+	}
 }
 
 func enrolledStub() *stubControl {
@@ -1250,16 +1280,20 @@ func seedEnrollmentWithKey(t *testing.T, root string, control *stubControl, publ
 	}
 }
 
-func seedBrokeredAuthorization(t *testing.T, root string, control *stubControl, active localstate.ActiveSession, now time.Time) string {
+func seedBrokeredAuthorization(t *testing.T, root string, control *stubControl, active localstate.ActiveSession, now time.Time, deadlines ...time.Time) string {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seedEnrollmentWithKey(t, root, control, base64.RawURLEncoding.EncodeToString(publicKey))
+	expires := now.Add(time.Hour)
+	if len(deadlines) != 0 {
+		expires = deadlines[0]
+	}
 	signed, err := policy.Sign(policy.Bundle{
 		Release: active.Profile.PolicyRelease, TenantID: active.Profile.TenantID, ProfileID: active.Profile.ID,
-		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
+		IssuedAt: now.Add(-time.Minute), ExpiresAt: expires,
 		Rules: []policy.Rule{{
 			ID: "allow-brokered-read", Effect: policy.EffectAllow, Providers: []string{active.Profile.Scope.Provider},
 			Operations: []string{"tool.Inspect"}, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes, Reason: "bounded provider read",

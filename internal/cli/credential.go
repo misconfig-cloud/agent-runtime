@@ -206,7 +206,7 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	expectedAuthorizationDigest, err := credentialAuthorizationDigest(store, config, active, a.Now)
+	expectedAuthorizationDigest, taskExpiresAt, err := credentialAuthorizationDigest(store, config, active, a.Now)
 	if err != nil {
 		return fmt.Errorf("verify credential authorization: %w", err)
 	}
@@ -242,6 +242,10 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	}
 	material, err := control.CredentialLease(ctx, active.Session.ID, requestID)
 	if err != nil {
+		var problem *controlclient.APIError
+		if errors.As(err, &problem) && problem.Code == "credential_task_window_too_short" {
+			return errors.New("not enough task time remains to renew access; review and start a new task")
+		}
 		return fmt.Errorf("issue credential lease: %w", err)
 	}
 	now := a.Now()
@@ -249,6 +253,7 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	if material.Kind != provider.CredentialKind || material.TargetIdentity == "" ||
 		material.RevocationSemantics != provider.RevocationSemantics ||
 		material.AuthorizationDigest != expectedAuthorizationDigest ||
+		material.ExpiresAt.After(taskExpiresAt) ||
 		!material.ExpiresAt.After(now) || maximumTTL <= 0 || material.ExpiresAt.After(now.Add(maximumTTL).Add(time.Second)) ||
 		len(material.Payload) == 0 || !json.Valid(material.Payload) {
 		return errors.New("control plane returned invalid credential material")
@@ -262,6 +267,12 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 		}
 		appendNewline = false
 	}
+	// A renderer may take time. Do not return material after either the native
+	// lease or the signed task has expired, even if the response was valid.
+	now = a.Now()
+	if !material.ExpiresAt.After(now) || !taskExpiresAt.After(now) || ctx.Err() != nil {
+		return errors.New("task access expired before credentials could be returned")
+	}
 	if _, err := a.Out.Write(output); err != nil {
 		return err
 	}
@@ -271,25 +282,25 @@ func (a *App) credentialLease(ctx context.Context, args []string) error {
 	return err
 }
 
-func credentialAuthorizationDigest(store localstate.Store, config localstate.Config, active localstate.ActiveSession, now func() time.Time) (string, error) {
+func credentialAuthorizationDigest(store localstate.Store, config localstate.Config, active localstate.ActiveSession, now func() time.Time) (string, time.Time, error) {
 	profileDigest, err := domain.Digest(active.Profile)
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if profileDigest != active.Session.ProfileDigest {
-		return "", errors.New("active session profile digest does not match")
+		return "", time.Time{}, errors.New("active session profile digest does not match")
 	}
 	publicKey, err := decodePublicKey(config.PolicyPublicKey)
 	if err != nil {
-		return "", errors.New("enrollment policy key is invalid")
+		return "", time.Time{}, errors.New("enrollment policy key is invalid")
 	}
 	signed, err := (policy.Cache{Path: store.PolicyPath(active.Session.ID), PublicKey: publicKey, Now: now}).Load()
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	if signed.KeyID != config.PolicyKeyID || signed.Bundle.Release != active.Profile.PolicyRelease ||
 		signed.Bundle.TenantID != active.Profile.TenantID || signed.Bundle.ProfileID != active.Profile.ID {
-		return "", errors.New("signed policy identity does not match the active session")
+		return "", time.Time{}, errors.New("signed policy identity does not match the active session")
 	}
 	rules := make([]provideradapter.AuthorizationRule, 0, len(signed.Bundle.Rules))
 	for _, rule := range signed.Bundle.Rules {
@@ -299,11 +310,12 @@ func credentialAuthorizationDigest(store localstate.Store, config localstate.Con
 			ResourceIDs: rule.ResourceIDs, ParameterLimits: rule.ParameterLimits,
 		})
 	}
-	return provideradapter.AuthorizationDigest(provideradapter.Authorization{
+	digest, err := provideradapter.AuthorizationDigest(provideradapter.Authorization{
 		ProfileDigest: profileDigest, PolicyRelease: signed.Bundle.Release,
 		Provider: active.Profile.Scope.Provider, AccountRef: active.Profile.Scope.AccountRef,
 		Environments: active.Profile.Scope.Environments, ResourcePrefixes: active.Profile.Scope.ResourcePrefixes,
 		ResourceIDs: active.Profile.Scope.ResourceIDs,
 		Rules:       rules,
 	})
+	return digest, signed.Bundle.ExpiresAt, err
 }
