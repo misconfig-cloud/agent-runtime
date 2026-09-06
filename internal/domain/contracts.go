@@ -127,6 +127,7 @@ type SessionProfile struct {
 	ProviderBinding   *ProviderBinding   `json:"provider_binding,omitempty"`
 	AdapterRelease    string             `json:"adapter_release"`
 	PolicyRelease     string             `json:"policy_release"`
+	AccessID          string             `json:"access_id,omitempty"`
 	CreatedAt         time.Time          `json:"created_at"`
 }
 

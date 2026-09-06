@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-var Tools = []string{"task_context", "propose_action", "list_actions", "execute_action"}
+var Tools = []string{"task_context", "discover_resources", "assess_action", "propose_action", "list_actions", "execute_action"}
 
 type Binding struct {
 	SessionID        string `json:"session_id"`

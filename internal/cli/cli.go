@@ -40,6 +40,8 @@ type Control interface {
 	CreateProfile(context.Context, controlclient.CreateProfileRequest) (domain.SessionProfile, string, error)
 	CreateProfileSuccessor(context.Context, string, controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error)
 	Profiles(context.Context) ([]domain.SessionProfile, error)
+	ReusableAccess(context.Context) ([]controlclient.ReusableAccess, error)
+	PrepareReusableAccess(context.Context, string, controlclient.PrepareReusableAccessRequest) (controlclient.PreparedReusableAccess, error)
 	CredentialProviders(context.Context) ([]controlclient.CredentialProvider, error)
 	CreateCredentialConnection(context.Context, controlclient.CreateCredentialConnectionRequest) (controlclient.PreparedCredentialConnection, error)
 	CredentialConnections(context.Context) ([]controlclient.CredentialConnection, error)
@@ -47,6 +49,9 @@ type Control interface {
 	RevokeCredentialConnection(context.Context, string) error
 	CredentialLease(context.Context, string, string) (controlclient.CredentialMaterial, error)
 	CreateTypedAction(context.Context, controlclient.CreateTypedActionRequest) (controlclient.TypedAction, error)
+	AssessTypedAction(context.Context, controlclient.CreateTypedActionRequest) (controlclient.ActionAssessment, error)
+	PrepareTypedAction(context.Context, controlclient.PrepareTypedActionRequest) (controlclient.PreparedAction, error)
+	DiscoverSessionResources(context.Context, string, string, string, string, []string) (controlclient.DiscoveryPage, error)
 	TypedActions(context.Context, string) ([]controlclient.TypedAction, error)
 	ExecuteTypedAction(context.Context, string) (controlclient.TypedAction, error)
 	StartSession(context.Context, domain.SessionProfile) (domain.AgentSession, error)
@@ -123,6 +128,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.setup(ctx, args[1:])
 	case "profile":
 		return a.profile(ctx, args[1:])
+	case "access":
+		return a.access(ctx, args[1:])
 	case "run":
 		return a.runSession(ctx, args[1:])
 	case "job":
@@ -641,16 +648,18 @@ func (a *App) listProfiles(ctx context.Context, args []string) error {
 func (a *App) runSession(ctx context.Context, args []string) error {
 	flags := a.flags("run")
 	profileReference := flags.String("profile", "", "profile name or ID")
+	accessReference := flags.String("access", "", "reusable access name or ID")
+	agentName := flags.String("agent", "", "agent to launch with reusable access (codex or claude)")
 	jobID := flags.String("job", "", "reviewed job ID")
 	stepKey := flags.String("step", "", "reviewed job step key")
 	if err := flags.Parse(args); err != nil {
 		return exitError{code: 2, err: err}
 	}
 	agentArgs := flags.Args()
-	if (*jobID == "") != (*stepKey == "") || (*jobID != "" && *profileReference != "") {
-		return exitError{code: 2, err: errors.New("use --job with --step, or --profile; do not combine them")}
+	if (*jobID == "") != (*stepKey == "") || (*jobID != "" && (*profileReference != "" || *accessReference != "")) || (*profileReference != "" && *accessReference != "") {
+		return exitError{code: 2, err: errors.New("use exactly one of --access, --profile, or --job with --step")}
 	}
-	if *profileReference == "" && *jobID == "" {
+	if *profileReference == "" && *accessReference == "" && *jobID == "" {
 		if len(agentArgs) == 0 {
 			return exitError{code: 2, err: errors.New("run requires --profile or a profile name")}
 		}
@@ -664,9 +673,46 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 	if err := (enforcement.Engine{Store: store, Control: control, Now: a.Now}).Replay(ctx); err != nil {
 		return fmt.Errorf("sync pending receipts before session start: %w", err)
 	}
-	profiles, err := control.Profiles(ctx)
-	if err != nil {
-		return fmt.Errorf("list profiles: %w", err)
+	var profile domain.SessionProfile
+	if *accessReference != "" {
+		agent := domain.AgentKind(strings.TrimSpace(*agentName))
+		if agent != domain.AgentCodex && agent != domain.AgentClaude {
+			return exitError{code: 2, err: errors.New("--agent must be codex or claude when using --access")}
+		}
+		access, err := control.ReusableAccess(ctx)
+		if err != nil {
+			return fmt.Errorf("list reusable access: %w", err)
+		}
+		selectedAccess, err := selectReusableAccess(access, *accessReference)
+		if err != nil {
+			return err
+		}
+		workspace, err := a.CurrentDir()
+		if err != nil {
+			return fmt.Errorf("resolve current workspace: %w", err)
+		}
+		workspace, err = filepath.Abs(workspace)
+		if err != nil {
+			return fmt.Errorf("resolve absolute workspace: %w", err)
+		}
+		prepared, err := control.PrepareReusableAccess(ctx, selectedAccess.ID, controlclient.PrepareReusableAccessRequest{Agent: string(agent), Workspace: workspace, AdapterRelease: a.Version})
+		if err != nil {
+			return fmt.Errorf("prepare reusable access: %w", err)
+		}
+		if prepared.Profile.AccessID != selectedAccess.ID || prepared.Profile.Agent != agent || filepath.Clean(prepared.Profile.Workspace) != filepath.Clean(workspace) {
+			return errors.New("prepared access does not match the requested agent and workspace")
+		}
+		profile = prepared.Profile
+	} else if *jobID == "" {
+		profiles, err := control.Profiles(ctx)
+		if err != nil {
+			return fmt.Errorf("list profiles: %w", err)
+		}
+		selectedProfile, err := selectProfile(profiles, *profileReference)
+		if err != nil {
+			return err
+		}
+		profile = selectedProfile
 	}
 	var selected *domain.JobSelection
 	if *jobID != "" {
@@ -681,10 +727,14 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 		}
 		*profileReference = step.ProfileID
 		fmt.Fprintf(a.Out, "Job: %s\nStep: %s\n", d.Document.Name, step.Name)
-	}
-	profile, err := selectProfile(profiles, *profileReference)
-	if err != nil {
-		return err
+		profiles, err := control.Profiles(ctx)
+		if err != nil {
+			return fmt.Errorf("list profiles: %w", err)
+		}
+		profile, err = selectProfile(profiles, *profileReference)
+		if err != nil {
+			return err
+		}
 	}
 	if _, err := a.LookPath(string(profile.Agent)); err != nil {
 		return fmt.Errorf("find %s executable: %w", profile.Agent, err)
@@ -1264,7 +1314,9 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|profile|credential|action|job|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|access|profile|credential|action|job|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "       misconfig access list")
+	fmt.Fprintln(a.Err, "       misconfig run --access ACCESS --agent <codex|claude> -- [agent arguments]")
 	fmt.Fprintln(a.Err, "       misconfig job <show|complete>")
 	fmt.Fprintln(a.Err, "       misconfig run --job JOB_ID --step STEP -- [agent arguments]")
 	fmt.Fprintln(a.Err, "       misconfig profile <create|list|migrate>")

@@ -124,6 +124,61 @@ type PreparedCredentialConnection struct {
 	Onboarding json.RawMessage      `json:"onboarding"`
 }
 
+type ReusableAccess struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ConnectionID    string `json:"connection_id"`
+	Provider        string `json:"provider"`
+	ProviderRelease string `json:"provider_release"`
+	AccountRef      string `json:"account_ref"`
+	Environment     string `json:"environment"`
+	SimplePolicy    struct {
+		Preset string `json:"preset"`
+	} `json:"simple_policy"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type PrepareReusableAccessRequest struct {
+	Agent            string `json:"agent"`
+	Workspace        string `json:"workspace"`
+	AdapterRelease   string `json:"adapter_release"`
+	PolicyTTLSeconds int64  `json:"policy_ttl_seconds,omitempty"`
+}
+
+type PreparedReusableAccess struct {
+	Profile       domain.SessionProfile `json:"profile"`
+	ProfileDigest string                `json:"profile_digest"`
+}
+
+type DiscoveryResource struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+}
+
+type DiscoveryPage struct {
+	ReceiptID  string              `json:"receipt_id"`
+	Resources  []DiscoveryResource `json:"resources"`
+	HasMore    bool                `json:"has_more"`
+	Mode       string              `json:"mode"`
+	ObservedAt time.Time           `json:"observed_at"`
+	ExpiresAt  time.Time           `json:"expires_at"`
+}
+
+type ActionAssessment struct {
+	ActionDigest  string `json:"action_digest"`
+	PolicyRelease string `json:"policy_release"`
+	Assessment    struct {
+		Policy           string `json:"policy"`
+		Requirement      string `json:"requirement"`
+		Reason           string `json:"reason"`
+		AuthorityGranted bool   `json:"authority_granted"`
+	} `json:"assessment"`
+	AuthorityGranted   bool `json:"authority_granted"`
+	ExecutionAvailable bool `json:"execution_available"`
+}
+
 type CredentialMaterial struct {
 	Kind                string          `json:"kind"`
 	Payload             json.RawMessage `json:"payload"`
@@ -168,6 +223,17 @@ type CreateTypedActionRequest struct {
 	Resource      string          `json:"resource"`
 	Environment   string          `json:"environment"`
 	Parameters    json.RawMessage `json:"parameters"`
+}
+
+type PrepareTypedActionRequest struct {
+	CreateTypedActionRequest
+	DiscoveryReceiptID string `json:"discovery_receipt_id"`
+}
+
+type PreparedAction struct {
+	Assessment         ActionAssessment `json:"assessment"`
+	Action             TypedAction      `json:"action"`
+	ResourceObservedAt time.Time        `json:"resource_observed_at"`
 }
 
 type CreateProfileSuccessorRequest struct {
@@ -242,6 +308,20 @@ func (c Client) Profiles(ctx context.Context) ([]domain.SessionProfile, error) {
 	return response.Profiles, err
 }
 
+func (c Client) ReusableAccess(ctx context.Context) ([]ReusableAccess, error) {
+	var response struct {
+		Access []ReusableAccess `json:"access"`
+	}
+	err := c.request(ctx, http.MethodGet, "/v1/reusable-access", c.Token, c.TenantID, nil, &response)
+	return response.Access, err
+}
+
+func (c Client) PrepareReusableAccess(ctx context.Context, accessID string, request PrepareReusableAccessRequest) (PreparedReusableAccess, error) {
+	var response PreparedReusableAccess
+	err := c.request(ctx, http.MethodPost, "/v1/reusable-access/"+url.PathEscape(accessID)+"/prepare", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
 func (c Client) CredentialProviders(ctx context.Context) ([]CredentialProvider, error) {
 	var response struct {
 		Providers []CredentialProvider `json:"providers"`
@@ -283,6 +363,34 @@ func (c Client) CredentialLease(ctx context.Context, sessionID, requestID string
 func (c Client) CreateTypedAction(ctx context.Context, request CreateTypedActionRequest) (TypedAction, error) {
 	var response TypedAction
 	err := c.request(ctx, http.MethodPost, "/v1/actions", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) AssessTypedAction(ctx context.Context, request CreateTypedActionRequest) (ActionAssessment, error) {
+	var response ActionAssessment
+	err := c.request(ctx, http.MethodPost, "/v1/actions/assess", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) PrepareTypedAction(ctx context.Context, request PrepareTypedActionRequest) (PreparedAction, error) {
+	var response PreparedAction
+	err := c.request(ctx, http.MethodPost, "/v1/actions/prepare", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) DiscoverSessionResources(ctx context.Context, sessionID, capabilityRef, query, sourceReceiptID string, resourceIDs []string) (DiscoveryPage, error) {
+	body := map[string]any{"capability_ref": capabilityRef}
+	if query != "" {
+		body["query"] = query
+	}
+	if sourceReceiptID != "" {
+		body["source_receipt_id"] = sourceReceiptID
+	}
+	if resourceIDs != nil {
+		body["resource_ids"] = resourceIDs
+	}
+	var response DiscoveryPage
+	err := c.request(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/resources/discover", c.Token, c.TenantID, body, &response)
 	return response, err
 }
 

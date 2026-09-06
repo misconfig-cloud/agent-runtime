@@ -59,6 +59,14 @@ type stubControl struct {
 	credentialRequestID    string
 	typedActions           []controlclient.TypedAction
 	typedActionRequest     controlclient.CreateTypedActionRequest
+	reusableAccess         []controlclient.ReusableAccess
+	preparedAccess         controlclient.PreparedReusableAccess
+	preparedAccessID       string
+	preparedAccessRequest  controlclient.PrepareReusableAccessRequest
+	actionAssessment       controlclient.ActionAssessment
+	preparedAction         controlclient.PreparedAction
+	preparedActionRequest  controlclient.PrepareTypedActionRequest
+	discoveryPage          controlclient.DiscoveryPage
 	executedTypedActionID  string
 	listedActionSessionID  string
 	authorizationStart     controlclient.DeviceAuthorizationStart
@@ -116,6 +124,16 @@ func (s *stubControl) CreateProfileSuccessor(_ context.Context, profileID string
 func (s *stubControl) Profiles(context.Context) ([]domain.SessionProfile, error) {
 	return s.profiles, nil
 }
+func (s *stubControl) ReusableAccess(context.Context) ([]controlclient.ReusableAccess, error) {
+	return s.reusableAccess, nil
+}
+func (s *stubControl) PrepareReusableAccess(_ context.Context, id string, request controlclient.PrepareReusableAccessRequest) (controlclient.PreparedReusableAccess, error) {
+	s.preparedAccessID, s.preparedAccessRequest = id, request
+	if s.preparedAccess.Profile.ID == "" {
+		return controlclient.PreparedReusableAccess{}, errors.New("not implemented in stub")
+	}
+	return s.preparedAccess, nil
+}
 func (s *stubControl) CredentialProviders(context.Context) ([]controlclient.CredentialProvider, error) {
 	return s.credentialProviders, nil
 }
@@ -157,6 +175,20 @@ func (s *stubControl) CreateTypedAction(_ context.Context, request controlclient
 		return controlclient.TypedAction{}, errors.New("not implemented in stub")
 	}
 	return s.typedActions[0], nil
+}
+func (s *stubControl) AssessTypedAction(_ context.Context, request controlclient.CreateTypedActionRequest) (controlclient.ActionAssessment, error) {
+	s.typedActionRequest = request
+	return s.actionAssessment, nil
+}
+func (s *stubControl) PrepareTypedAction(_ context.Context, request controlclient.PrepareTypedActionRequest) (controlclient.PreparedAction, error) {
+	s.preparedActionRequest = request
+	if s.preparedAction.Action.ID == "" {
+		return controlclient.PreparedAction{}, errors.New("not implemented in stub")
+	}
+	return s.preparedAction, nil
+}
+func (s *stubControl) DiscoverSessionResources(context.Context, string, string, string, string, []string) (controlclient.DiscoveryPage, error) {
+	return s.discoveryPage, nil
 }
 func (s *stubControl) TypedActions(_ context.Context, sessionID string) ([]controlclient.TypedAction, error) {
 	s.listedActionSessionID = sessionID
@@ -568,6 +600,53 @@ func TestRunLaunchesNativeAgentWithVerifiedPolicyAndStopsSession(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "policies", session.ID+".json")); err != nil {
 		t.Fatalf("verified policy was not cached: %v", err)
+	}
+}
+
+func TestRunPreparesReusableAccessForCurrentAgentWorkspace(t *testing.T) {
+	root, workspace := t.TempDir(), t.TempDir()
+	now := time.Now().UTC().Truncate(time.Second)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.SessionProfile{ID: "profile-access", TenantID: "tenant-1", Name: "production", Agent: domain.AgentCodex, Workspace: workspace,
+		Scope: domain.Scope{Provider: "fixture", AccountRef: "target-1", Environments: []string{"production"}}, Enforcement: domain.EnforcementTyped,
+		CredentialMode: domain.CredentialAction, ProviderBinding: &domain.ProviderBinding{ConnectionID: "connection-1", ProviderRelease: "fixture.session@1"},
+		AdapterRelease: "0.1.17", PolicyRelease: "policy-access", AccessID: "access-1", CreatedAt: now}
+	digest, err := domain.Digest(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityDigest := "sha256:" + strings.Repeat("a", 64)
+	signed, err := policy.Sign(policy.Bundle{Release: profile.PolicyRelease, TenantID: profile.TenantID, ProfileID: profile.ID, IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour), Rules: []policy.Rule{{ID: "typed", Effect: policy.EffectTyped, Providers: []string{"fixture"}, Operations: []string{"ShiftVector"}, Capabilities: []provideradapter.CapabilitySelector{{Ref: "fixture.shift@1", Digest: capabilityDigest}}, Reason: "review"}}}, "key-1", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := enrolledStub()
+	var access controlclient.ReusableAccess
+	access.ID, access.Name, access.State = "access-1", "production", "active"
+	control.reusableAccess = []controlclient.ReusableAccess{access}
+	control.preparedAccess = controlclient.PreparedReusableAccess{Profile: profile, ProfileDigest: digest}
+	control.started = domain.AgentSession{ID: "session-access", TenantID: profile.TenantID, ProfileID: profile.ID, ProfileDigest: digest, ActorID: "actor-1", DeviceID: "device-1", State: domain.SessionRunning, StartedAt: now}
+	control.remote = control.started
+	control.signed = signed
+	control.credentialProviders = []controlclient.CredentialProvider{{Release: "fixture.session@1", Provider: "fixture", Actions: []controlclient.ActionDescriptor{{Ref: "fixture.shift@1", Operation: "ShiftVector", CapabilityDigest: capabilityDigest, ParametersSchema: json.RawMessage(`{"type":"object"}`)}}}}
+	seedEnrollmentWithKey(t, root, control, base64.RawURLEncoding.EncodeToString(publicKey))
+	launched := false
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{In: strings.NewReader(""), Out: io.Discard, Err: io.Discard, StateRoot: root, FileTokens: true, Version: "0.1.17", Now: func() time.Time { return now }, CurrentDir: func() (string, error) { return workspace, nil }, NewControl: func(_, _, _ string) Control { return control }, LookPath: func(string) (string, error) { return "/usr/bin/codex", nil }, Executable: func() (string, error) { return executable, nil }, RunCommand: func(_ context.Context, name string, _ []string, directory string, _ []string, _ io.Reader, _, _ io.Writer) error {
+		launched = name == "codex" && directory == workspace
+		return nil
+	}}
+	if err := app.Run(context.Background(), []string{"run", "--access", "production", "--agent", "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if !launched || control.preparedAccessID != "access-1" || control.preparedAccessRequest.Agent != "codex" || control.preparedAccessRequest.Workspace != workspace || control.preparedAccessRequest.AdapterRelease != "0.1.17" {
+		t.Fatalf("access launch was not exact: launched=%v id=%q request=%#v", launched, control.preparedAccessID, control.preparedAccessRequest)
 	}
 }
 

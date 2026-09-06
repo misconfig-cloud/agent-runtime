@@ -66,7 +66,7 @@ func TestTaskExecutionRequiresCurrentApproval(t *testing.T) {
 func TestTaskToolsExposeOnlyBoundWorkflow(t *testing.T) {
 	f, client := taskServerFixture(t)
 	tools, err := client.ListTools(context.Background(), nil)
-	if err != nil || len(tools.Tools) != 4 {
+	if err != nil || len(tools.Tools) != 6 {
 		t.Fatalf("tools: %#v %v", tools, err)
 	}
 	for _, tool := range tools.Tools {
@@ -75,6 +75,9 @@ func TestTaskToolsExposeOnlyBoundWorkflow(t *testing.T) {
 		}
 		if tool.Name == "execute_action" && (tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint != nil && !*tool.Annotations.DestructiveHint) {
 			t.Fatal("execution falsely annotated as read-only or non-destructive")
+		}
+		if (tool.Name == "discover_resources" || tool.Name == "assess_action") && !tool.Annotations.ReadOnlyHint {
+			t.Fatalf("%s is not marked read-only", tool.Name)
 		}
 	}
 	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{Name: "task_context", Arguments: map[string]any{}})
