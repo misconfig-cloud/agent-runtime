@@ -1,8 +1,10 @@
 # Misconfig agent runtime
 
-Misconfig launches Codex or Claude inside a named infrastructure session. Each
-session has a frozen scope, signed rules, a remote stop, and redacted action
-receipts. Existing AWS profiles and kubeconfig files stay on the device.
+Misconfig launches the customer's existing Codex or Claude in the current
+directory. Standard mode needs no provider, target, profile or job: the paired
+workspace guard evaluates supported tool calls, preserves native agent
+permissions and records redacted activity. Advanced mode retains exact provider
+scope, brokered credentials, approvals and verified actions.
 
 This repository is independent from the hosted control plane and console.
 
@@ -10,12 +12,19 @@ This repository is independent from the hosted control plane and console.
 
 ```text
 misconfig setup
+misconfig codex
+misconfig claude
+misconfig status
+misconfig uninstall --yes
+```
+
+Advanced and compatibility commands remain available:
+
+```text
 misconfig profile create
 misconfig profile list
 misconfig profile migrate
 misconfig run
-misconfig status
-misconfig uninstall --yes
 misconfig doctor
 misconfig version
 ```
@@ -155,6 +164,19 @@ every local change before it opens the one-time approval page:
 ```sh
 misconfig setup --control https://console.misconfig.cloud
 ```
+
+Then launch the normal agent from any project directory:
+
+```sh
+misconfig codex
+# or
+misconfig claude
+```
+
+Misconfig configures session-local hooks and local OpenTelemetry collection for
+that child process. It does not change the customer's global Codex or Claude
+configuration. Allowed tool calls still use the agent's native sandbox and
+approval behavior; blocked calls stop before execution.
 
 An operator-issued enrollment token remains available as a recovery path. Read
 it from a protected file or stdin; never place it on the command line.
