@@ -117,6 +117,15 @@ func commandFrom(input Input) string {
 func classify(profile domain.SessionProfile, tool, command string) (provider, operation, resource, location string) {
 	provider = profile.Scope.Provider
 	resource = provider + "://" + profile.Scope.AccountRef
+	if provider == "local-agent" {
+		// Standard guard sessions govern a native tool invocation, not a cloud
+		// credential grant. Command spelling must not replace the signed scope.
+		operation = "shell.Execute"
+		if strings.TrimSpace(tool) != "" && !isShellTool(tool) {
+			operation = "tool." + camel(tool)
+		}
+		return
+	}
 	if len(profile.Scope.ResourcePrefixes) > 0 {
 		resource = profile.Scope.ResourcePrefixes[0]
 	}

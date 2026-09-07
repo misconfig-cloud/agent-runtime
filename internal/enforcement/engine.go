@@ -72,7 +72,7 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 		}
 		return Result{Decision: decision, Action: action}, nil
 	}
-	decision := (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
+	var decision policy.Decision
 	if active.Profile.Scope.Provider == "local-agent" {
 		redacted := hook.RedactedToolInput(input)
 		redactedDigest, digestErr := hook.RedactedInputDigest(input.ToolName, redacted)
@@ -80,7 +80,12 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 			return Result{}, fmt.Errorf("digest redacted native action: %w", digestErr)
 		}
 		action.Parameters = map[string]any{"hook_tool_use_id": hook.CorrelationKey(input), "tool_input": redacted}
-		decision = e.semanticDecision(ctx, active, signed.Bundle, input, redacted, redactedDigest)
+		decision = (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
+		if decision.Effect != policy.EffectDeny && decision.Effect != policy.EffectStop {
+			decision = stricterDecision(decision, e.semanticDecision(ctx, active, signed.Bundle, input, redacted, redactedDigest))
+		}
+	} else {
+		decision = (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
 	}
 	if transportDecision, tool, ok := e.taskTransportDecision(active, signed.Bundle, input.ToolName); ok {
 		decision = transportDecision

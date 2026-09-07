@@ -19,14 +19,15 @@ import (
 )
 
 type fakeControl struct {
-	session      domain.AgentSession
-	signed       policy.SignedBundle
-	sessionErr   error
-	policyErr    error
-	receipts     []spool.Receipt
-	stopped      bool
-	sessionCalls int
-	policyCalls  int
+	session        domain.AgentSession
+	signed         policy.SignedBundle
+	sessionErr     error
+	policyErr      error
+	receipts       []spool.Receipt
+	stopped        bool
+	sessionCalls   int
+	policyCalls    int
+	guardrailCalls int
 }
 
 func (f *fakeControl) Session(context.Context, string) (domain.AgentSession, error) {
@@ -46,6 +47,7 @@ func (f *fakeControl) Stop(context.Context, string, string) error {
 	return nil
 }
 func (f *fakeControl) AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
+	f.guardrailCalls++
 	return controlclient.GuardrailDecision{Effect: "continue", Reason: "ordinary test action", PolicyVersion: 1}, nil
 }
 
@@ -349,6 +351,10 @@ func fixture(t *testing.T, effect policy.Effect) (Engine, *fakeControl, string, 
 }
 
 func fixtureForAgent(t *testing.T, agent domain.AgentKind, effect policy.Effect) (Engine, *fakeControl, string, time.Time) {
+	return fixtureForProvider(t, agent, effect, "aws")
+}
+
+func fixtureForProvider(t *testing.T, agent domain.AgentKind, effect policy.Effect, provider string) (Engine, *fakeControl, string, time.Time) {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
@@ -359,7 +365,7 @@ func fixtureForAgent(t *testing.T, agent domain.AgentKind, effect policy.Effect)
 	}
 	profile := domain.SessionProfile{
 		ID: "profile-1", TenantID: "tenant-1", Name: "AWS production", Agent: agent,
-		Workspace: root, Scope: domain.Scope{Provider: "aws", AccountRef: "123456789012", Environments: []string{"production"}},
+		Workspace: root, Scope: domain.Scope{Provider: provider, AccountRef: "123456789012", Environments: []string{"production"}},
 		Enforcement: domain.EnforcementHook, CredentialMode: domain.CredentialAttach,
 		PolicyRelease: "policy@1", AdapterRelease: string(agent) + "@1", CreatedAt: now,
 	}
@@ -375,6 +381,10 @@ func fixtureForAgent(t *testing.T, agent domain.AgentKind, effect policy.Effect)
 		Release: profile.PolicyRelease, TenantID: profile.TenantID, ProfileID: profile.ID,
 		IssuedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Hour),
 		Rules: []policy.Rule{{ID: "decision", Effect: effect, Providers: []string{"aws"}, Operations: []string{"aws.ec2.DescribeInstances"}, Reason: "bounded test rule"}},
+	}
+	if provider == "local-agent" {
+		bundle.Rules[0].Providers = []string{provider}
+		bundle.Rules[0].Operations = nil
 	}
 	signed, err := policy.Sign(bundle, "key-1", privateKey)
 	if err != nil {
