@@ -6,6 +6,7 @@ require (
 	github.com/misconfig-cloud/provider-sdk v0.10.1-0.20260906051941-7d73b083a36c
 	go.opentelemetry.io/proto/otlp v1.11.0
 	google.golang.org/protobuf v1.36.12
+	mvdan.cc/sh/v3 v3.12.0
 )
 
 require (
@@ -25,6 +26,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/sys v0.47.0
 	golang.org/x/time v0.15.0 // indirect
 )
