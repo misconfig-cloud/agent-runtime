@@ -88,3 +88,41 @@ func TestLocalReportRetentionRedactsTargetsAndDropsEvidence(t *testing.T) {
 		t.Fatal("local evidence or credential retained")
 	}
 }
+
+func TestModelAssistanceCannotPromoteUnknownLocalEffects(t *testing.T) {
+	for _, variant := range []string{"acknowledged", "blocked", "promoted", "legacy-source"} {
+		t.Run(variant, func(t *testing.T) {
+			engine, control, path, _ := fixtureForProvider(t, domain.AgentCodex, policy.EffectAllow, "local-agent")
+			active, err := localstate.LoadActive(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			control.guardrailOverride = func(req controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
+				if req.LocalAnalysis == nil || req.LocalAnalysis.Classification != semantics.Unknown {
+					t.Fatalf("unfamiliar interpreter must remain unknown: %+v", req.LocalAnalysis)
+				}
+				d := controlclient.GuardrailDecision{Effect: "continue", Classification: "unknown", Reason: "Unresolved interpreter effects", PolicyVersion: 1, AssessmentSource: "model_assisted", InputDigest: req.InputDigest}
+				switch variant {
+				case "blocked":
+					d.Effect = "block"
+				case "promoted":
+					d.Classification = "ordinary"
+				case "legacy-source":
+					d.AssessmentSource = "legacy_model"
+				}
+				return d, nil
+			}
+			r, err := engine.Pre(context.Background(), path, hook.Input{ToolName: "Bash", ToolUseID: "unknown-test", ToolInput: map[string]any{"command": "python3 -c 'print(1)'"}, CWD: active.Profile.Workspace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := policy.EffectDeny
+			if variant == "acknowledged" {
+				want = policy.EffectAllow
+			}
+			if r.Decision.Effect != want {
+				t.Fatalf("assistance loosened local truth: %+v", r.Decision)
+			}
+		})
+	}
+}

@@ -152,7 +152,7 @@ func (e Engine) semanticDecision(ctx context.Context, active localstate.ActiveSe
 	if !e.now().Before(bundle.ExpiresAt) || e.Store.IsStopped(active.Session.ID) {
 		return fail("The session stopped or its signed policy expired during assessment")
 	}
-	if decision.AssessmentSource != "local" || decision.InputDigest != inputDigest || decision.Classification != string(transport.Classification) {
+	if (decision.AssessmentSource != "local" && decision.AssessmentSource != "model_assisted") || decision.InputDigest != inputDigest || decision.Classification != string(transport.Classification) {
 		return fail("the control plane did not acknowledge the exact local analysis")
 	}
 	if transport.Classification == semantics.CredentialExposure && decision.Effect != "block" {
