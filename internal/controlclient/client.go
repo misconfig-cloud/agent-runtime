@@ -14,6 +14,7 @@ import (
 
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
+	"github.com/misconfig-cloud/agent-runtime/internal/semantics"
 	"github.com/misconfig-cloud/agent-runtime/internal/spool"
 )
 
@@ -86,24 +87,27 @@ type PreparedGuardProfile struct {
 }
 
 type GuardrailAssessmentRequest struct {
-	ToolName    string         `json:"tool_name"`
-	ToolInput   map[string]any `json:"tool_input"`
-	NativeToolUseID string     `json:"native_tool_use_id,omitempty"`
-	PathClass   string         `json:"path_class,omitempty"`
-	AgentModel  string         `json:"agent_model,omitempty"`
-	InputDigest string         `json:"input_digest"`
+	LocalAnalysis   *semantics.Report `json:"local_analysis,omitempty"`
+	ToolName        string            `json:"tool_name"`
+	ToolInput       map[string]any    `json:"tool_input"`
+	NativeToolUseID string            `json:"native_tool_use_id,omitempty"`
+	PathClass       string            `json:"path_class,omitempty"`
+	AgentModel      string            `json:"agent_model,omitempty"`
+	InputDigest     string            `json:"input_digest"`
 }
 
 type GuardrailDecision struct {
-	ID             string `json:"id"`
-	Classification string `json:"classification"`
-	Effect         string `json:"effect"`
-	Confidence     string `json:"confidence"`
-	Reason         string `json:"reason"`
-	Consequence    string `json:"consequence,omitempty"`
-	Model          string `json:"model"`
-	PolicyVersion  int    `json:"policy_version"`
-	DurationMS     int64  `json:"duration_ms"`
+	AssessmentSource string `json:"assessment_source"`
+	InputDigest      string `json:"input_digest"`
+	ID               string `json:"id"`
+	Classification   string `json:"classification"`
+	Effect           string `json:"effect"`
+	Confidence       string `json:"confidence"`
+	Reason           string `json:"reason"`
+	Consequence      string `json:"consequence,omitempty"`
+	Model            string `json:"model"`
+	PolicyVersion    int    `json:"policy_version"`
+	DurationMS       int64  `json:"duration_ms"`
 }
 
 type SessionUsage struct {

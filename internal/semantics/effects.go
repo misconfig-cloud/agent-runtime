@@ -67,6 +67,7 @@ type Evidence struct {
 }
 
 type Report struct {
+	InputDigest    string         `json:"input_digest,omitempty"`
 	Version        string         `json:"version"`
 	Classification Classification `json:"classification"`
 	Complete       bool           `json:"complete"`

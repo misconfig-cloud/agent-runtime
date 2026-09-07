@@ -17,6 +17,7 @@ import (
 	"github.com/misconfig-cloud/agent-runtime/internal/hook"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
 	"github.com/misconfig-cloud/agent-runtime/internal/policy"
+	"github.com/misconfig-cloud/agent-runtime/internal/semantics"
 	"github.com/misconfig-cloud/agent-runtime/internal/spool"
 )
 
@@ -130,12 +131,32 @@ func (e Engine) semanticDecision(ctx context.Context, active localstate.ActiveSe
 	if e.Control == nil {
 		return fail("the semantic guardrail is unavailable")
 	}
+	local := (semantics.Engine{}).AnalyzeTool(semantics.ToolRequest{
+		Workspace: active.Profile.Workspace, CWD: input.CWD, Name: input.ToolName, Input: input.ToolInput,
+	})
+	transport, reportErr := localTransportReport(local, inputDigest)
+	if reportErr != nil {
+		return fail("local analysis could not be prepared for recording")
+	}
 	decision, err := e.Control.AssessGuardrail(ctx, active.Session.ID, controlclient.GuardrailAssessmentRequest{
 		ToolName: input.ToolName, ToolInput: redacted, NativeToolUseID: input.ToolUseID, PathClass: actionPathClass(input),
 		AgentModel: input.Model, InputDigest: inputDigest,
+		LocalAnalysis: &transport,
 	})
 	if err != nil {
 		return fail("the semantic guardrail could not classify this action")
+	}
+	if !local.Fresh() {
+		return fail("Filesystem evidence changed while the action was being checked; retry for a fresh assessment")
+	}
+	if !e.now().Before(bundle.ExpiresAt) || e.Store.IsStopped(active.Session.ID) {
+		return fail("The session stopped or its signed policy expired during assessment")
+	}
+	if decision.AssessmentSource != "local" || decision.InputDigest != inputDigest || decision.Classification != string(transport.Classification) {
+		return fail("the control plane did not acknowledge the exact local analysis")
+	}
+	if transport.Classification == semantics.CredentialExposure && decision.Effect != "block" {
+		return fail("Local analysis detected possible credential disclosure")
 	}
 	if strings.TrimSpace(decision.Reason) == "" || decision.PolicyVersion < 1 {
 		return fail("the semantic guardrail returned an invalid decision")

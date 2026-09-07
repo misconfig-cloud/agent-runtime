@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,15 +20,16 @@ import (
 )
 
 type fakeControl struct {
-	session        domain.AgentSession
-	signed         policy.SignedBundle
-	sessionErr     error
-	policyErr      error
-	receipts       []spool.Receipt
-	stopped        bool
-	sessionCalls   int
-	policyCalls    int
-	guardrailCalls int
+	session           domain.AgentSession
+	signed            policy.SignedBundle
+	sessionErr        error
+	policyErr         error
+	receipts          []spool.Receipt
+	stopped           bool
+	sessionCalls      int
+	policyCalls       int
+	guardrailCalls    int
+	guardrailOverride func(controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error)
 }
 
 func (f *fakeControl) Session(context.Context, string) (domain.AgentSession, error) {
@@ -46,9 +48,16 @@ func (f *fakeControl) Stop(context.Context, string, string) error {
 	f.stopped = true
 	return nil
 }
-func (f *fakeControl) AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
+func (f *fakeControl) AssessGuardrail(_ context.Context, _ string, request controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
 	f.guardrailCalls++
-	return controlclient.GuardrailDecision{Effect: "continue", Reason: "ordinary test action", PolicyVersion: 1}, nil
+	if f.guardrailOverride != nil {
+		return f.guardrailOverride(request)
+	}
+	classification := "ordinary"
+	if request.LocalAnalysis != nil {
+		classification = string(request.LocalAnalysis.Classification)
+	}
+	return controlclient.GuardrailDecision{Effect: "continue", Reason: "ordinary test action", PolicyVersion: 1, AssessmentSource: "local", InputDigest: request.InputDigest, Classification: classification}, nil
 }
 
 func TestPreAndPostProduceDurableBoundReceipts(t *testing.T) {
@@ -358,6 +367,13 @@ func fixtureForProvider(t *testing.T, agent domain.AgentKind, effect policy.Effe
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Second)
 	root := t.TempDir()
+	if provider == "local-agent" {
+		canonical, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root = canonical
+	}
 	store := localstate.Store{Root: root}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
