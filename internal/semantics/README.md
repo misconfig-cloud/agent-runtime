@@ -7,7 +7,10 @@ clients require the API to acknowledge the exact local analysis and revalidate
 filesystem evidence and policy expiry after the request.
 
 `Engine.Analyze` parses supported Bash syntax without evaluating it.
-`Engine.AnalyzeTool` also handles exact native Read/Write/Edit tool payloads.
+`Engine.AnalyzeTool` also handles exact native Read/Write/Edit tool payloads and
+Codex's native `apply_patch` envelope. Added/updated/deleted targets contribute
+filesystem effects; malformed syntax, repeated targets and patch moves remain
+unresolved. Patch text receives the same sensitive-literal inspection.
 Installed `CallAnalyzer` implementations may add effect descriptions. Agent
 descriptions and MCP names cannot register an analyzer or grant permission.
 
