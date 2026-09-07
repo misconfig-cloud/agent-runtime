@@ -24,6 +24,12 @@ type Client struct {
 	HTTP     *http.Client
 }
 
+const (
+	defaultRequestTimeout = 8 * time.Second
+	maximumReadAttempts   = 3
+	initialReadRetryDelay = 200 * time.Millisecond
+)
+
 type Enrollment struct {
 	Device struct {
 		ID       string `json:"id"`
@@ -520,6 +526,41 @@ func (c Client) PutReceipt(ctx context.Context, receipt spool.Receipt) error {
 }
 
 func (c Client) request(ctx context.Context, method, path, token, tenant string, input, output any) error {
+	var encoded []byte
+	if input != nil {
+		var err error
+		encoded, err = json.Marshal(input)
+		if err != nil {
+			return err
+		}
+	}
+	client := c.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: defaultRequestTimeout}
+	}
+	attempts := 1
+	if method == http.MethodGet {
+		attempts = maximumReadAttempts
+	}
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err = c.requestOnce(ctx, client, method, path, token, tenant, encoded, input != nil, output)
+		if err == nil || method != http.MethodGet || !retryableReadError(ctx, err) || attempt == attempts-1 {
+			return err
+		}
+		delay := initialReadRetryDelay << attempt
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
+
+func (c Client) requestOnce(ctx context.Context, client *http.Client, method, path, token, tenant string, encoded []byte, hasInput bool, output any) error {
 	base, err := url.Parse(strings.TrimRight(c.BaseURL, "/"))
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
 		return errors.New("control URL must be absolute HTTP(S)")
@@ -530,11 +571,7 @@ func (c Client) request(ctx context.Context, method, path, token, tenant string,
 	}
 	endpoint := base.ResolveReference(reference)
 	var body io.Reader
-	if input != nil {
-		encoded, err := json.Marshal(input)
-		if err != nil {
-			return err
-		}
+	if hasInput {
 		body = bytes.NewReader(encoded)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
@@ -542,7 +579,7 @@ func (c Client) request(ctx context.Context, method, path, token, tenant string,
 		return err
 	}
 	request.Header.Set("Accept", "application/json")
-	if input != nil {
+	if hasInput {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	if token != "" {
@@ -550,10 +587,6 @@ func (c Client) request(ctx context.Context, method, path, token, tenant string,
 	}
 	if tenant != "" {
 		request.Header.Set("X-Misconfig-Tenant", tenant)
-	}
-	client := c.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 8 * time.Second}
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -588,4 +621,23 @@ func (c Client) request(ctx context.Context, method, path, token, tenant string,
 		}
 	}
 	return nil
+}
+
+func retryableReadError(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var apiError *APIError
+	if errors.As(err, &apiError) {
+		switch apiError.StatusCode {
+		case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests,
+			http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			return true
+		default:
+			return false
+		}
+	}
+	// A GET has no provider effect and carries no authority transition. A
+	// transport failure can therefore be retried without duplicating work.
+	return true
 }
