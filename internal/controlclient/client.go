@@ -70,6 +70,48 @@ type CreateProfileRequest struct {
 	PolicyTTLSeconds  int64                     `json:"policy_ttl_seconds"`
 }
 
+type PrepareGuardProfileRequest struct {
+	Agent          string `json:"agent"`
+	Workspace      string `json:"workspace"`
+	AdapterRelease string `json:"adapter_release"`
+}
+
+type PreparedGuardProfile struct {
+	Profile       domain.SessionProfile `json:"profile"`
+	ProfileDigest string                `json:"profile_digest"`
+	Guardrail     struct {
+		Preset  string `json:"preset"`
+		Version int    `json:"version"`
+	} `json:"guardrail"`
+}
+
+type GuardrailAssessmentRequest struct {
+	ToolName    string         `json:"tool_name"`
+	ToolInput   map[string]any `json:"tool_input"`
+	NativeToolUseID string     `json:"native_tool_use_id,omitempty"`
+	PathClass   string         `json:"path_class,omitempty"`
+	AgentModel  string         `json:"agent_model,omitempty"`
+	InputDigest string         `json:"input_digest"`
+}
+
+type GuardrailDecision struct {
+	ID             string `json:"id"`
+	Classification string `json:"classification"`
+	Effect         string `json:"effect"`
+	Confidence     string `json:"confidence"`
+	Reason         string `json:"reason"`
+	Consequence    string `json:"consequence,omitempty"`
+	Model          string `json:"model"`
+	PolicyVersion  int    `json:"policy_version"`
+	DurationMS     int64  `json:"duration_ms"`
+}
+
+type SessionUsage struct {
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	Model        string `json:"model,omitempty"`
+}
+
 type CredentialProvider struct {
 	Release               string             `json:"release"`
 	Provider              string             `json:"provider"`
@@ -306,6 +348,24 @@ func (c Client) CreateProfile(ctx context.Context, request CreateProfileRequest)
 	return response.Profile, response.ProfileDigest, err
 }
 
+func (c Client) PrepareGuardProfile(ctx context.Context, request PrepareGuardProfileRequest) (PreparedGuardProfile, error) {
+	var response PreparedGuardProfile
+	err := c.request(ctx, http.MethodPost, "/v1/guard-sessions/prepare", c.Token, c.TenantID, request, &response)
+	return response, err
+}
+
+func (c Client) AssessGuardrail(ctx context.Context, sessionID string, request GuardrailAssessmentRequest) (GuardrailDecision, error) {
+	var response struct {
+		Decision GuardrailDecision `json:"decision"`
+	}
+	err := c.request(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/guardrail-assessments", c.Token, c.TenantID, request, &response)
+	return response.Decision, err
+}
+
+func (c Client) PutSessionUsage(ctx context.Context, sessionID string, usage SessionUsage) error {
+	return c.request(ctx, http.MethodPost, "/v1/sessions/"+url.PathEscape(sessionID)+"/usage", c.Token, c.TenantID, usage, nil)
+}
+
 func (c Client) Profiles(ctx context.Context) ([]domain.SessionProfile, error) {
 	var response struct {
 		Profiles []domain.SessionProfile `json:"profiles"`
@@ -520,7 +580,8 @@ func (c Client) PutReceipt(ctx context.Context, receipt spool.Receipt) error {
 		"native_agent_id": action.Native.AgentID, "native_agent_type": action.Native.AgentType,
 		"native_model": action.Native.Model, "native_permission_mode": action.Native.PermissionMode,
 		"native_path_class": action.Native.PathClass,
-		"provider_receipt":  receipt.ProviderReceipt, "recorded_at": receipt.RecordedAt,
+		"duration_millis":   receipt.DurationMillis, "exit_code": receipt.ExitCode,
+		"provider_receipt": receipt.ProviderReceipt, "recorded_at": receipt.RecordedAt,
 	}
 	return c.request(ctx, http.MethodPost, "/v1/receipts", c.Token, c.TenantID, request, nil)
 }

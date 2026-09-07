@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/hook"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
@@ -43,6 +44,9 @@ func (f *fakeControl) PutReceipt(_ context.Context, receipt spool.Receipt) error
 func (f *fakeControl) Stop(context.Context, string, string) error {
 	f.stopped = true
 	return nil
+}
+func (f *fakeControl) AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
+	return controlclient.GuardrailDecision{Effect: "continue", Reason: "ordinary test action", PolicyVersion: 1}, nil
 }
 
 func TestPreAndPostProduceDurableBoundReceipts(t *testing.T) {

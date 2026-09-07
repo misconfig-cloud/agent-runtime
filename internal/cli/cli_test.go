@@ -63,6 +63,10 @@ type stubControl struct {
 	preparedAccess         controlclient.PreparedReusableAccess
 	preparedAccessID       string
 	preparedAccessRequest  controlclient.PrepareReusableAccessRequest
+	preparedGuard          controlclient.PreparedGuardProfile
+	preparedGuardRequest   controlclient.PrepareGuardProfileRequest
+	guardDecision          controlclient.GuardrailDecision
+	usage                  controlclient.SessionUsage
 	actionAssessment       controlclient.ActionAssessment
 	preparedAction         controlclient.PreparedAction
 	preparedActionRequest  controlclient.PrepareTypedActionRequest
@@ -113,6 +117,23 @@ func (s *stubControl) ExchangeDeviceAuthorization(context.Context, string) (cont
 func (s *stubControl) CreateProfile(_ context.Context, request controlclient.CreateProfileRequest) (domain.SessionProfile, string, error) {
 	s.created = request
 	return s.profiles[0], "sha256:profile", nil
+}
+func (s *stubControl) PrepareGuardProfile(_ context.Context, request controlclient.PrepareGuardProfileRequest) (controlclient.PreparedGuardProfile, error) {
+	s.preparedGuardRequest = request
+	if s.preparedGuard.Profile.ID == "" {
+		return controlclient.PreparedGuardProfile{}, errors.New("not implemented in stub")
+	}
+	return s.preparedGuard, nil
+}
+func (s *stubControl) AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error) {
+	if s.guardDecision.Effect == "" {
+		return controlclient.GuardrailDecision{}, errors.New("not implemented in stub")
+	}
+	return s.guardDecision, nil
+}
+func (s *stubControl) PutSessionUsage(_ context.Context, _ string, usage controlclient.SessionUsage) error {
+	s.usage = usage
+	return nil
 }
 func (s *stubControl) CreateProfileSuccessor(_ context.Context, profileID string, request controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error) {
 	s.successorOf, s.successorIn = profileID, request
@@ -379,7 +400,7 @@ func TestNativeDecisionContracts(t *testing.T) {
 		{name: "codex deny remains deny", agent: "codex", effect: policy.EffectDeny, wantOutput: true, permission: "deny"},
 		{name: "codex ask becomes deny", agent: "codex", effect: policy.EffectApproval, wantOutput: true, permission: "deny"},
 		{name: "claude ask remains ask", agent: "claude", effect: policy.EffectApproval, wantOutput: true, permission: "ask"},
-		{name: "claude allow is explicit", agent: "claude", effect: policy.EffectAllow, wantOutput: true, permission: "allow"},
+		{name: "claude allow preserves native permissions", agent: "claude", effect: policy.EffectAllow},
 		{name: "claude deny remains deny", agent: "claude", effect: policy.EffectDeny, wantOutput: true, permission: "deny"},
 	}
 	for _, test := range tests {
@@ -446,7 +467,7 @@ func TestNativeLaunchConfigurationIsSessionScoped(t *testing.T) {
 	store := localstate.Store{Root: root, FileTokens: true}
 	profile := domain.SessionProfile{ID: "profile-1", Agent: domain.AgentCodex, Workspace: "/workspace"}
 	app := &App{}
-	name, args, err := app.nativeCommand(store, "/opt/Misconfig Runtime/bin/misconfig", "session-1", profile, []string{"exec", "-c", "approval_policy=never", "probe"})
+	name, args, err := app.nativeCommand(store, "/opt/Misconfig Runtime/bin/misconfig", "session-1", profile, []string{"exec", "-c", "approval_policy=never", "probe"}, "http://127.0.0.1:4318")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +480,7 @@ func TestNativeLaunchConfigurationIsSessionScoped(t *testing.T) {
 	}
 
 	profile.Agent = domain.AgentClaude
-	name, args, err = app.nativeCommand(store, "/opt/misconfig", "session-2", profile, nil)
+	name, args, err = app.nativeCommand(store, "/opt/misconfig", "session-2", profile, nil, "http://127.0.0.1:4318")
 	if err != nil {
 		t.Fatal(err)
 	}

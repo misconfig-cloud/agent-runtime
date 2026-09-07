@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/misconfig-cloud/agent-runtime/internal/agenttelemetry"
 	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/credentialruntime"
 	"github.com/misconfig-cloud/agent-runtime/internal/discovery"
@@ -38,6 +39,9 @@ type Control interface {
 	CreateDeviceAuthorization(context.Context, string) (controlclient.DeviceAuthorizationStart, error)
 	ExchangeDeviceAuthorization(context.Context, string) (controlclient.DeviceAuthorizationExchange, error)
 	CreateProfile(context.Context, controlclient.CreateProfileRequest) (domain.SessionProfile, string, error)
+	PrepareGuardProfile(context.Context, controlclient.PrepareGuardProfileRequest) (controlclient.PreparedGuardProfile, error)
+	AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error)
+	PutSessionUsage(context.Context, string, controlclient.SessionUsage) error
 	CreateProfileSuccessor(context.Context, string, controlclient.CreateProfileSuccessorRequest) (controlclient.ProfileSuccessor, error)
 	Profiles(context.Context) ([]domain.SessionProfile, error)
 	ReusableAccess(context.Context) ([]controlclient.ReusableAccess, error)
@@ -126,6 +130,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.doctor()
 	case "setup":
 		return a.setup(ctx, args[1:])
+	case "codex", "claude":
+		return a.quickRun(ctx, domain.AgentKind(args[0]), args[1:])
 	case "profile":
 		return a.profile(ctx, args[1:])
 	case "access":
@@ -357,7 +363,7 @@ func (a *App) setup(ctx context.Context, args []string) error {
 		_ = store.DeleteDeviceToken(enrollment.Device.ID)
 		return err
 	}
-	fmt.Fprintf(a.Out, "Device paired. %s is governed for tenant %s.\n", enrollment.Device.ID, enrollment.Device.TenantID)
+	fmt.Fprintln(a.Out, "Device paired. Run `misconfig codex` or `misconfig claude` from your project.")
 	return nil
 }
 
@@ -645,6 +651,33 @@ func (a *App) listProfiles(ctx context.Context, args []string) error {
 	return nil
 }
 
+func (a *App) quickRun(ctx context.Context, agent domain.AgentKind, args []string) error {
+	_, _, control, err := a.authenticated()
+	if err != nil {
+		return err
+	}
+	workspace, err := a.CurrentDir()
+	if err != nil {
+		return fmt.Errorf("resolve current workspace: %w", err)
+	}
+	workspace, err = filepath.Abs(workspace)
+	if err != nil {
+		return fmt.Errorf("resolve absolute workspace: %w", err)
+	}
+	prepared, err := control.PrepareGuardProfile(ctx, controlclient.PrepareGuardProfileRequest{
+		Agent: string(agent), Workspace: workspace, AdapterRelease: a.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("prepare guarded %s session: %w", agent, err)
+	}
+	if prepared.Profile.Agent != agent || filepath.Clean(prepared.Profile.Workspace) != filepath.Clean(workspace) || prepared.Profile.Enforcement != domain.EnforcementHook || prepared.Profile.CredentialMode != domain.CredentialAttach {
+		return errors.New("prepared guard profile does not match the requested local session")
+	}
+	fmt.Fprintf(a.Out, "Guardrail: %s (v%d). Starting %s in %s.\n", strings.ReplaceAll(prepared.Guardrail.Preset, "_", " "), prepared.Guardrail.Version, agent, filepath.Base(workspace))
+	launch := append([]string{"--profile", prepared.Profile.ID}, args...)
+	return a.runSession(ctx, launch)
+}
+
 func (a *App) runSession(ctx context.Context, args []string) error {
 	flags := a.flags("run")
 	profileReference := flags.String("profile", "", "profile name or ID")
@@ -787,11 +820,36 @@ func (a *App) runSession(ctx context.Context, args []string) error {
 			return a.stopAfterStart(control, session.ID, "task tool initialization failed", err)
 		}
 	}
-	commandName, commandArgs, err := a.nativeCommand(store, executable, session.ID, profile, agentArgs)
+	telemetry, err := agenttelemetry.Start(control, session.ID)
+	if err != nil {
+		return a.stopAfterStart(control, session.ID, "native telemetry initialization failed", err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = telemetry.Close(closeCtx)
+	}()
+	commandName, commandArgs, err := a.nativeCommand(store, executable, session.ID, profile, agentArgs, telemetry.URL())
 	if err != nil {
 		return a.stopAfterStart(control, session.ID, "native adapter initialization failed", err)
 	}
 	environment := append(os.Environ(), "MISCONFIG_ACTIVE_SESSION="+activePath, "MISCONFIG_HOME="+store.Root)
+	if profile.Agent == domain.AgentClaude {
+		environment = replaceEnvironment(environment, map[string]string{
+			"CLAUDE_CODE_ENABLE_TELEMETRY":        "1",
+			"OTEL_METRICS_EXPORTER":               "otlp",
+			"OTEL_LOGS_EXPORTER":                  "otlp",
+			"OTEL_EXPORTER_OTLP_PROTOCOL":         "http/protobuf",
+			"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": telemetry.URL() + "/v1/metrics",
+			"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":    telemetry.URL() + "/v1/logs",
+			"OTEL_LOG_USER_PROMPTS":               "0",
+			"OTEL_LOG_ASSISTANT_RESPONSES":        "0",
+			"OTEL_LOG_TOOL_DETAILS":               "0",
+			"OTEL_METRIC_EXPORT_INTERVAL":         "5000",
+			"OTEL_LOGS_EXPORT_INTERVAL":           "2000",
+			"OTEL_RESOURCE_ATTRIBUTES":            "service.name=misconfig-agent,misconfig.session_id=" + session.ID,
+		})
+	}
 	if profile.CredentialMode == domain.CredentialBrokered {
 		providers, providerErr := control.CredentialProviders(ctx)
 		if providerErr != nil {
@@ -949,7 +1007,7 @@ func decodePublicKey(encoded string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(decoded), nil
 }
 
-func (a *App) nativeCommand(store localstate.Store, executable, sessionID string, profile domain.SessionProfile, extra []string) (string, []string, error) {
+func (a *App) nativeCommand(store localstate.Store, executable, sessionID string, profile domain.SessionProfile, extra []string, telemetryURL string) (string, []string, error) {
 	if err := validateNativeArguments(profile.Agent, extra); err != nil {
 		return "", nil, err
 	}
@@ -968,6 +1026,9 @@ func (a *App) nativeCommand(store localstate.Store, executable, sessionID string
 		args = append(args, extra...)
 		args = append(args,
 			"-c", "features.hooks=true",
+			"-c", "otel.environment=\"misconfig\"",
+			"-c", "otel.log_user_prompt=false",
+			"-c", fmt.Sprintf("otel.exporter={otlp-http={endpoint=%s,protocol=\"binary\"}}", strconv.Quote(strings.TrimRight(telemetryURL, "/")+"/v1/logs")),
 			"-c", codexHookOverride("PreToolUse", pre, "Misconfig is checking policy"),
 			"-c", codexHookOverride("PostToolUse", post, "Misconfig is recording proof"),
 		)
@@ -1013,6 +1074,28 @@ func (a *App) nativeCommand(store localstate.Store, executable, sessionID string
 	default:
 		return "", nil, fmt.Errorf("unsupported agent %q", profile.Agent)
 	}
+}
+
+func replaceEnvironment(environment []string, replacements map[string]string) []string {
+	result := make([]string, 0, len(environment)+len(replacements))
+	for _, entry := range environment {
+		key, _, found := strings.Cut(entry, "=")
+		if found {
+			if _, replaced := replacements[key]; replaced {
+				continue
+			}
+		}
+		result = append(result, entry)
+	}
+	keys := make([]string, 0, len(replacements))
+	for key := range replacements {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		result = append(result, key+"="+replacements[key])
+	}
+	return result
 }
 
 // A second argument terminator would turn our final configuration into prompt
@@ -1258,7 +1341,12 @@ func (a *App) hook(ctx context.Context, args []string) error {
 	if config.TenantID == "" {
 		return a.nativeDeny(*agent, "Misconfig tenant binding is unavailable")
 	}
-	engine := enforcement.Engine{Store: store, Now: a.Now}
+	token, err := store.DeviceToken(config.DeviceID)
+	if err != nil {
+		return a.nativeDeny(*agent, "Misconfig device credential is unavailable")
+	}
+	control := a.NewControl(config.ControlURL, config.TenantID, token)
+	engine := enforcement.Engine{Store: store, Control: control, Now: a.Now}
 	if event == "post" {
 		if err := engine.Post(ctx, activePath, input); err != nil {
 			fmt.Fprintf(a.Err, "misconfig post-hook receipt warning: %v\n", err)
@@ -1283,7 +1371,7 @@ func (a *App) nativeDeny(agent, reason string) error {
 }
 
 func (a *App) nativeDecision(agent string, decision policy.Decision) error {
-	if agent == string(domain.AgentCodex) && decision.Effect == policy.EffectAllow {
+	if decision.Effect == policy.EffectAllow {
 		return nil
 	}
 	permission := "deny"
@@ -1314,7 +1402,9 @@ func (a *App) flags(name string) *flag.FlagSet {
 }
 
 func (a *App) usage() {
-	fmt.Fprintln(a.Err, "usage: misconfig <version|doctor|setup|access|profile|credential|action|job|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "usage: misconfig <codex|claude|version|doctor|setup|access|profile|credential|action|job|run|status|sync|uninstall>")
+	fmt.Fprintln(a.Err, "       misconfig codex [agent arguments]")
+	fmt.Fprintln(a.Err, "       misconfig claude [agent arguments]")
 	fmt.Fprintln(a.Err, "       misconfig access list")
 	fmt.Fprintln(a.Err, "       misconfig run --access ACCESS --agent <codex|claude> -- [agent arguments]")
 	fmt.Fprintln(a.Err, "       misconfig job <show|complete>")

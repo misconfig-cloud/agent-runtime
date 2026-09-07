@@ -163,7 +163,7 @@ func TestNativeTaskConfigurationIsSessionLocalAndRequiredForCodex(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, args, err := f.app.nativeCommand(f.store, bridge.Executable, f.active.Session.ID, f.active.Profile, []string{"exec", "test prompt", "-c", "mcp_servers.unrelated={command=\"unrelated\"}"})
+	name, args, err := f.app.nativeCommand(f.store, bridge.Executable, f.active.Session.ID, f.active.Profile, []string{"exec", "test prompt", "-c", "mcp_servers.unrelated={command=\"unrelated\"}"}, "http://127.0.0.1:4318")
 	if err != nil || name != "codex" {
 		t.Fatalf("launch config: %s %v", name, err)
 	}

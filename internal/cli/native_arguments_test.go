@@ -16,7 +16,7 @@ func TestNativeArgumentsCannotDisableLaunchControls(t *testing.T) {
 		{"exec", "--disable", "codex_hooks", "prompt"},
 		{"--disable=plugins,hooks", "exec", "prompt"},
 	} {
-		_, _, err := (&App{}).nativeCommand(localstate.Store{Root: t.TempDir()}, "/unused", "session-1", domain.SessionProfile{Agent: domain.AgentCodex}, args)
+		_, _, err := (&App{}).nativeCommand(localstate.Store{Root: t.TempDir()}, "/unused", "session-1", domain.SessionProfile{Agent: domain.AgentCodex}, args, "http://127.0.0.1:4318")
 		if err == nil {
 			t.Fatalf("accepted bypass arguments %q", args)
 		}
@@ -27,7 +27,7 @@ func TestNativeArgumentsCannotDisableLaunchControls(t *testing.T) {
 }
 
 func TestNativeHookFeatureOverrideFollowsCallerConfig(t *testing.T) {
-	_, args, err := (&App{}).nativeCommand(localstate.Store{Root: t.TempDir()}, "/unused", "session-1", domain.SessionProfile{Agent: domain.AgentCodex}, []string{"exec", "-c", "features.hooks=false", "--disable", "plugins", "prompt"})
+	_, args, err := (&App{}).nativeCommand(localstate.Store{Root: t.TempDir()}, "/unused", "session-1", domain.SessionProfile{Agent: domain.AgentCodex}, []string{"exec", "-c", "features.hooks=false", "--disable", "plugins", "prompt"}, "http://127.0.0.1:4318")
 	if err != nil {
 		t.Fatal(err)
 	}

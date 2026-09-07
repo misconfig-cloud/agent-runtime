@@ -33,6 +33,8 @@ type Receipt struct {
 	Action            domain.ActionEnvelope `json:"action"`
 	Decision          policy.Decision       `json:"decision"`
 	Outcome           Outcome               `json:"outcome"`
+	DurationMillis    int64                 `json:"duration_millis,omitempty"`
+	ExitCode          *int                  `json:"exit_code,omitempty"`
 	ProviderReceipt   string                `json:"provider_receipt,omitempty"`
 	VerificationState VerificationState     `json:"verification_state"`
 	RecordedAt        time.Time             `json:"recorded_at"`

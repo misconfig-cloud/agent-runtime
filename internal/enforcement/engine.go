@@ -4,11 +4,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/misconfig-cloud/agent-runtime/internal/controlclient"
 	"github.com/misconfig-cloud/agent-runtime/internal/domain"
 	"github.com/misconfig-cloud/agent-runtime/internal/hook"
 	"github.com/misconfig-cloud/agent-runtime/internal/localstate"
@@ -21,6 +25,7 @@ type Control interface {
 	Policy(context.Context, string) (policy.SignedBundle, error)
 	PutReceipt(context.Context, spool.Receipt) error
 	Stop(context.Context, string, string) error
+	AssessGuardrail(context.Context, string, controlclient.GuardrailAssessmentRequest) (controlclient.GuardrailDecision, error)
 }
 
 type Result struct {
@@ -62,12 +67,21 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 			return Result{}, fmt.Errorf("persist native action identity: %w", persistErr)
 		}
 		action, decision = persisted.Action, stricterDecision(persisted.Decision, decision)
-		if recordErr := e.record(action, decision, spool.OutcomeBlocked, ""); recordErr != nil {
+		if recordErr := e.record(action, decision, spool.OutcomeBlocked, "", 0, nil); recordErr != nil {
 			return Result{}, recordErr
 		}
 		return Result{Decision: decision, Action: action}, nil
 	}
 	decision := (policy.Evaluator{Bundle: signed.Bundle}).Evaluate(active.Profile, active.Session, action, now)
+	if active.Profile.Scope.Provider == "local-agent" {
+		redacted := hook.RedactedToolInput(input)
+		redactedDigest, digestErr := hook.RedactedInputDigest(input.ToolName, redacted)
+		if digestErr != nil {
+			return Result{}, fmt.Errorf("digest redacted native action: %w", digestErr)
+		}
+		action.Parameters = map[string]any{"hook_tool_use_id": hook.CorrelationKey(input), "tool_input": redacted}
+		decision = e.semanticDecision(ctx, active, signed.Bundle, input, redacted, redactedDigest)
+	}
 	if transportDecision, tool, ok := e.taskTransportDecision(active, signed.Bundle, input.ToolName); ok {
 		decision = transportDecision
 		action.Operation = "misconfig.task_transport." + tool
@@ -98,10 +112,49 @@ func (e Engine) Pre(ctx context.Context, activePath string, input hook.Input) (R
 			return Result{}, fmt.Errorf("persist stopped session: %w", err)
 		}
 	}
-	if err := e.record(action, decision, outcome, ""); err != nil {
+	if err := e.record(action, decision, outcome, "", 0, nil); err != nil {
 		return Result{}, err
 	}
 	return Result{Decision: decision, Action: action}, nil
+}
+
+func (e Engine) semanticDecision(ctx context.Context, active localstate.ActiveSession, bundle policy.Bundle, input hook.Input, redacted map[string]any, inputDigest string) policy.Decision {
+	fail := func(reason string) policy.Decision {
+		return policy.Decision{Effect: policy.EffectDeny, RuleID: "misconfig.guardrail.unavailable", Reason: reason, PolicyRelease: bundle.Release}
+	}
+	if e.Control == nil {
+		return fail("the semantic guardrail is unavailable")
+	}
+	decision, err := e.Control.AssessGuardrail(ctx, active.Session.ID, controlclient.GuardrailAssessmentRequest{
+		ToolName: input.ToolName, ToolInput: redacted, NativeToolUseID: input.ToolUseID, PathClass: actionPathClass(input),
+		AgentModel: input.Model, InputDigest: inputDigest,
+	})
+	if err != nil {
+		return fail("the semantic guardrail could not classify this action")
+	}
+	if strings.TrimSpace(decision.Reason) == "" || decision.PolicyVersion < 1 {
+		return fail("the semantic guardrail returned an invalid decision")
+	}
+	effect := policy.EffectDeny
+	if decision.Effect == "continue" {
+		effect = policy.EffectAllow
+	} else if decision.Effect != "block" {
+		return fail("the semantic guardrail returned an unsupported effect")
+	}
+	return policy.Decision{
+		Effect: effect, RuleID: fmt.Sprintf("workspace-guard-v%d", decision.PolicyVersion),
+		Reason: decision.Reason, PolicyRelease: bundle.Release,
+	}
+}
+
+func actionPathClass(input hook.Input) string {
+	if strings.TrimSpace(input.ParentToolUseID) != "" {
+		return "nested"
+	}
+	if strings.TrimSpace(input.AgentID) != "" {
+		return "subagent"
+	}
+	return "direct"
 }
 
 // Native retries retain their original action identity, not an obsolete allow
@@ -163,7 +216,8 @@ func (e Engine) Post(ctx context.Context, activePath string, input hook.Input) e
 	if input.ToolResponse != nil {
 		receiptDigest, _ = domain.Digest(input.ToolResponse)
 	}
-	if err := e.record(pending.Action, pending.Decision, outcome, receiptDigest); err != nil {
+	exitCode := completionExitCode(input, outcome)
+	if err := e.record(pending.Action, pending.Decision, outcome, receiptDigest, input.DurationMS, exitCode); err != nil {
 		return err
 	}
 	return nil
@@ -193,11 +247,15 @@ func (e Engine) Replay(ctx context.Context) error {
 	return nil
 }
 
-func (e Engine) record(action domain.ActionEnvelope, decision policy.Decision, outcome spool.Outcome, providerReceipt string) error {
+func (e Engine) record(action domain.ActionEnvelope, decision policy.Decision, outcome spool.Outcome, providerReceipt string, durationMillis int64, exitCode *int) error {
 	receipt, err := spool.NewReceipt(action, decision, outcome, providerReceipt, e.now())
 	if err != nil {
 		return err
 	}
+	if durationMillis > 0 {
+		receipt.DurationMillis = durationMillis
+	}
+	receipt.ExitCode = exitCode
 	store := spool.Store{Root: e.Store.ReceiptRoot()}
 	return store.Put(receipt)
 }
@@ -323,4 +381,44 @@ func completionOutcome(input hook.Input) (spool.Outcome, bool) {
 		}
 	}
 	return "", false
+}
+
+var exitCodePattern = regexp.MustCompile(`(?i)exit(?:ed)?(?: with)?(?: status| code)?[=: ]+(-?[0-9]+)`)
+
+func completionExitCode(input hook.Input, outcome spool.Outcome) *int {
+	if response, ok := input.ToolResponse.(map[string]any); ok {
+		for _, key := range []string{"exit_code", "exitCode", "code"} {
+			if code, ok := integerValue(response[key]); ok && code >= -1 && code <= 255 {
+				return &code
+			}
+		}
+	}
+	for _, value := range []string{input.Error, fmt.Sprint(input.ToolResponse)} {
+		if match := exitCodePattern.FindStringSubmatch(value); len(match) == 2 {
+			if code, err := strconv.Atoi(match[1]); err == nil && code >= -1 && code <= 255 {
+				return &code
+			}
+		}
+	}
+	code := 0
+	if outcome == spool.OutcomeFailed {
+		code = 1
+	}
+	return &code
+}
+
+func integerValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), int64(int(typed)) == typed
+	case float64:
+		return int(typed), typed == float64(int(typed))
+	case json.Number:
+		parsed, err := strconv.Atoi(typed.String())
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
