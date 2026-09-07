@@ -17,6 +17,13 @@ func (e Engine) AnalyzeTool(request ToolRequest) Report {
 	base := Request{Workspace: request.Workspace, CWD: request.CWD}
 	return e.analyze(base, func(s *analysis) {
 		switch request.Name {
+		case "apply_patch":
+			patch, ok := request.Input["command"].(string)
+			if !ok {
+				s.report.unknown("The native patch payload is missing")
+				return
+			}
+			s.patch(patch)
 		case "Bash", "shell_command", "exec_command":
 			key := "command"
 			if request.Name == "exec_command" {
