@@ -1,9 +1,8 @@
 # Local effect analysis
 
 This package produces evidence and uncertainty, **not authorization**. It is
-integrated into the source hook path, but production hooks still use the deployed
-model-classifier release until the coordinated runtime/API cutover. New source
-clients require the API to acknowledge the exact local analysis and revalidate
+integrated into the released v0.1.20 hook path with the paired schema-37 API.
+Clients require the API to acknowledge the exact local analysis and revalidate
 filesystem evidence and policy expiry after the request.
 
 `Engine.Analyze` parses supported Bash syntax without evaluating it.
